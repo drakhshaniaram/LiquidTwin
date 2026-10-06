@@ -496,8 +496,8 @@ const TERMINAL = {
   platformZ: 14.5,   // berthing platform origin
   // local fender face on berth mesh ≈ +2.2 → world fender line
   fenderZ: 14.5 + 2.2,
-  // vessel centerline seaward of fenders (hull half-depth ≈ 0.6)
-  dockZ: 14.5 + 2.2 + 0.75,
+  // nominal vessel centerline seaward of fenders (overridden per hull scale)
+  dockZ: 14.5 + 2.2 + 1.15,
   deckY: 1.2,        // jetty deck height above water
   // MLA base on waterside of platform (local z); arms reach further +Z to ship
   mlaLocalZ: 0.85,
@@ -509,8 +509,36 @@ const TERMINAL = {
 };
 /** Vessels must stay seaward of jetty head (except when docking). */
 const SHORE_Z = TERMINAL.trestleZ1;
-/** Vessel footprint + clearance (includes upscaled hulls). */
-const VESSEL = { len: 3.2, beam: 1.35, gapX: 5.6, gapZ: 4.2, sepX: 4.6, sepZ: 3.6 };
+/** Vessel footprint + clearance (includes upscaled hulls). beam = hull depth along ±Z. */
+const VESSEL = { len: 3.2, beam: 1.2, gapX: 5.6, gapZ: 4.2, sepX: 4.6, sepZ: 3.6 };
+
+/** Hull scale stored on parcel (matches mesh build). */
+function parcelScale(p) {
+  return p?.hullScale ?? 1;
+}
+
+/** Half hull depth in world Z for this parcel. */
+function hullHalfZ(p) {
+  return (VESSEL.beam * parcelScale(p)) * 0.5;
+}
+
+/**
+ * Seaward-most jetty solid (fender face). Vessels must keep their shore-side
+ * hull face seaward of this line — never morph into the platform / trestle.
+ */
+function fenderClearZ(p, extra = 0.3) {
+  return TERMINAL.fenderZ + hullHalfZ(p) + extra;
+}
+
+/** Alongside centerline for this hull (shore face just clear of fenders). */
+function dockZFor(p) {
+  return fenderClearZ(p, 0.35);
+}
+
+/** Minimum Z while steaming (stay off the jetty head entirely). */
+function seaLaneMinZ(p) {
+  return fenderClearZ(p, 1.6);
+}
 
 const WATER = {
   queueMinX: -22,
@@ -605,42 +633,73 @@ function smooth01(u) {
 }
 
 /**
- * Wall-clock voyage (seconds). Schedule only gates when a leg may start —
- * never skips ahead to dock/depart (that was the snap).
+ * Wall-clock voyage. Slow final moor / cast-off; paths start from live hull pose
+ * so queue separation never snaps a ship back when it leaves.
  */
-const VESSEL_WALL = { approach: 6.0, dockHold: 2.4, depart: 5.0 };
+const VESSEL_WALL = { approach: 9.5, dockHold: 3.5, depart: 8.5 };
 
-/** parcelId → { stage, u, dockT }  stage: queue|approach|dock|depart|park */
+/** parcelId → { stage, u, dockT, sx, sz } */
 const vesselNav = new Map();
 
-function vesselPaths(p, j) {
+function resetVesselNav(id) {
+  vesselNav.set(id, { stage: "queue", u: 0, dockT: 0, sx: null, sz: null });
+}
+
+/** Approach / depart polylines. sx/sz = live start so departure from exact hull pose. */
+function vesselPaths(p, j, nav) {
   const b = state.berths[j.berth];
-  const dockZ = b.dockZ ?? TERMINAL.dockZ;
-  // Stagger fairway lanes per berth so parallel moves don't share one track
-  const fairwayZ = dockZ + 4.2 + (j.berth % 3) * 2.6;
+  const dockZ = dockZFor(p);
+  const laneZ = seaLaneMinZ(p);
+  const fairwayZ = Math.max(laneZ + 2.8, dockZ + 4.8 + (j.berth % 3) * 2.8);
+  const sx = nav?.sx ?? p.waitPos.x;
+  // never start a path from inside the jetty (separation can shove queue slots)
+  const sz = Math.max(nav?.sz ?? p.waitPos.z, laneZ);
+  const holdZ = dockZ + 2.4; // stand-off, still seaward of fenders
   return {
     b, dockZ, fairwayZ,
     approach: [
-      { x: p.waitPos.x, z: p.waitPos.z },
-      { x: p.waitPos.x, z: fairwayZ },
+      { x: sx, z: sz },
+      { x: sx, z: fairwayZ },
+      { x: (sx + b.x) * 0.5, z: fairwayZ },
       { x: b.x, z: fairwayZ },
-      { x: b.x, z: dockZ + 1.8 },
+      { x: b.x, z: holdZ },
       { x: b.x, z: dockZ },
     ],
     depart: [
       { x: b.x, z: dockZ },
+      { x: b.x, z: holdZ },
       { x: b.x, z: fairwayZ },
+      { x: (b.x + p.parkPos.x) * 0.5, z: fairwayZ },
       { x: p.parkPos.x, z: fairwayZ },
-      { x: p.parkPos.x, z: p.parkPos.z },
+      { x: p.parkPos.x, z: Math.max(p.parkPos.z, laneZ) },
     ],
   };
 }
 
-function resetVesselNav(id) {
-  vesselNav.set(id, { stage: "queue", u: 0, dockT: 0 });
+/** Keep hull center seaward enough that the shore face clears the jetty. */
+function clampPoseClearOfJetty(row, p) {
+  if (!p) return;
+  const minZ = (row.phase === "dock")
+    ? dockZFor(p)
+    : seaLaneMinZ(p);
+  if (row.z < minZ) row.z = minZ;
 }
 
-/** True when no other hull is still using this berth (approach / dock / early cast-off). */
+/** Progress rate: crawl in final approach / first cast-off (organized mooring). */
+function voyageRate(stage, u) {
+  if (stage === "approach") {
+    if (u < 0.55) return 1.0;
+    if (u < 0.78) return 0.55; // along fairway to berth axis
+    return 0.28;               // final moor creep
+  }
+  if (stage === "depart") {
+    if (u < 0.22) return 0.3;  // cast off
+    if (u < 0.55) return 0.7;
+    return 1.0;
+  }
+  return 1;
+}
+
 function berthVisuallyClear(berthId, exceptId) {
   const plan = activePlan();
   if (!plan) return true;
@@ -649,12 +708,11 @@ function berthVisuallyClear(berthId, exceptId) {
     const n = vesselNav.get(job.id);
     if (!n) continue;
     if (n.stage === "approach" || n.stage === "dock") return false;
-    if (n.stage === "depart" && n.u < 0.6) return false;
+    if (n.stage === "depart" && n.u < 0.65) return false;
   }
   return true;
 }
 
-/** At most one inbound approach in the harbour (prevents overtaking on the fairway). */
 function approachSlotFree(exceptId) {
   for (const [id, n] of vesselNav) {
     if (id === exceptId) continue;
@@ -663,62 +721,57 @@ function approachSlotFree(exceptId) {
   return true;
 }
 
-/** Predicted pose for nav state (no mutation). */
 function poseForNav(p, j, nav) {
-  if (!j) return { x: p.waitPos.x, z: p.waitPos.z, phase: "queue" };
-  const { b, dockZ, approach, depart } = vesselPaths(p, j);
-  if (nav.stage === "park") return { x: p.parkPos.x, z: p.parkPos.z, phase: "park" };
-  if (nav.stage === "dock") return { x: b.x, z: dockZ, phase: "dock" };
-  if (nav.stage === "depart") {
-    const pos = pathAtXZ(depart, smooth01(nav.u));
-    return { x: pos.x, z: pos.z, phase: nav.u < 0.5 ? "undock" : "to-park" };
+  if (!j) {
+    const row = { x: p.waitPos.x, z: p.waitPos.z, phase: "queue" };
+    clampPoseClearOfJetty(row, p);
+    return row;
   }
-  if (nav.stage === "approach") {
-    const pos = pathAtXZ(approach, smooth01(nav.u));
-    const phase = nav.u < 0.34 ? "to-fairway" : nav.u < 0.72 ? "along-fairway" : "final";
-    return { x: pos.x, z: pos.z, phase };
+  const { b, dockZ, approach, depart } = vesselPaths(p, j, nav);
+  let row;
+  if (nav.stage === "park") row = { x: p.parkPos.x, z: p.parkPos.z, phase: "park" };
+  else if (nav.stage === "dock") row = { x: b.x, z: dockZ, phase: "dock" };
+  else if (nav.stage === "depart") {
+    const pos = pathAtXZ(depart, nav.u);
+    row = { x: pos.x, z: pos.z, phase: nav.u < 0.35 ? "undock" : "to-park" };
+  } else if (nav.stage === "approach") {
+    const pos = pathAtXZ(approach, nav.u);
+    const phase = nav.u < 0.28 ? "to-fairway" : nav.u < 0.72 ? "along-fairway" : "final";
+    row = { x: pos.x, z: pos.z, phase };
+  } else {
+    row = { x: p.waitPos.x, z: p.waitPos.z, phase: "queue" };
   }
-  return { x: p.waitPos.x, z: p.waitPos.z, phase: "queue" };
+  clampPoseClearOfJetty(row, p);
+  return row;
 }
 
-/** Would advancing this ship to (x,z) hit another vessel's current target? */
 function blockedByOthers(id, x, z, others) {
   for (const o of others) {
     if (o.id === id) continue;
-    if (o.phase === "dock") {
-      // stay clear of alongside ships
-      if (hullsOverlap(x, z, o.x, o.z, VESSEL.sepX * 1.05, VESSEL.sepZ * 1.15)) return true;
-      continue;
-    }
-    if (hullsOverlap(x, z, o.x, o.z)) return true;
+    const sx = o.phase === "dock" ? VESSEL.sepX * 1.1 : VESSEL.sepX;
+    const sz = o.phase === "dock" ? VESSEL.sepZ * 1.2 : VESSEL.sepZ;
+    if (hullsOverlap(x, z, o.x, o.z, sx, sz)) return true;
   }
   return false;
 }
 
-/**
- * Step all voyages together: FIFO fairway entry, hold progress if next pose overlaps.
- */
 function stepAllVesselTargets(dt) {
   const plan = activePlan();
   const live = state.playing ? dt : 0;
   const t = state.t;
 
-  // Ensure nav records exist
   for (const p of state.parcels) {
     if (!vesselNav.has(p.id)) resetVesselNav(p.id);
-    if ((!state.playing && t <= 1e-6) || !plan) {
-      resetVesselNav(p.id);
-    }
+    if ((!state.playing && t <= 1e-6) || !plan) resetVesselNav(p.id);
   }
 
   if (!plan) {
     return state.parcels.map((p) => ({
       id: p.id, dir: p.dir, j: null, phase: "queue",
-      x: p.waitPos.x, z: p.waitPos.z,
+      x: p.waitPos.x, z: p.waitPos.z, mesh: vesselMeshes.get(p.id),
     }));
   }
 
-  // Snapshot current poses for collision tests
   const current = [];
   for (const p of state.parcels) {
     const j = plan.jobs.find((x) => x.id === p.id);
@@ -727,17 +780,17 @@ function stepAllVesselTargets(dt) {
     current.push({ id: p.id, dir: p.dir, j, ...pose, nav });
   }
 
-  // 1) Advance dock holds / depart / approach (hold u if blocked)
   for (const row of current) {
-    const { p, j, nav } = { p: state.parcels.find((x) => x.id === row.id), j: row.j, nav: row.nav };
+    const p = state.parcels.find((x) => x.id === row.id);
+    const j = row.j;
+    const nav = row.nav;
     if (!j || live <= 0) continue;
 
     if (nav.stage === "dock") {
       nav.dockT += live;
-      const canLeave = nav.dockT >= VESSEL_WALL.dockHold && t >= j.end;
-      if (canLeave) {
-        const { depart } = vesselPaths(p, j);
-        const nxt = pathAtXZ(depart, smooth01(0.02));
+      if (nav.dockT >= VESSEL_WALL.dockHold && t >= j.end) {
+        const { depart } = vesselPaths(p, j, nav);
+        const nxt = pathAtXZ(depart, 0.02);
         if (!blockedByOthers(p.id, nxt.x, nxt.z, current)) {
           nav.stage = "depart";
           nav.u = 0;
@@ -746,34 +799,26 @@ function stepAllVesselTargets(dt) {
       continue;
     }
 
-    if (nav.stage === "depart") {
-      const { depart } = vesselPaths(p, j);
-      const trialU = Math.min(1, nav.u + live / VESSEL_WALL.depart);
-      const nxt = pathAtXZ(depart, smooth01(trialU));
+    if (nav.stage === "depart" || nav.stage === "approach") {
+      const paths = vesselPaths(p, j, nav);
+      const path = nav.stage === "depart" ? paths.depart : paths.approach;
+      const dur = nav.stage === "depart" ? VESSEL_WALL.depart : VESSEL_WALL.approach;
+      const rate = voyageRate(nav.stage, nav.u);
+      const trialU = Math.min(1, nav.u + (live / dur) * rate);
+      const nxt = pathAtXZ(path, trialU);
       if (!blockedByOthers(p.id, nxt.x, nxt.z, current)) {
         nav.u = trialU;
         if (nav.u >= 1) {
-          nav.stage = "park";
-          nav.u = 1;
-        }
-        // refresh snapshot pose
-        const pose = poseForNav(p, j, nav);
-        row.x = pose.x; row.z = pose.z; row.phase = pose.phase;
-      }
-      continue;
-    }
-
-    if (nav.stage === "approach") {
-      const { approach, b, dockZ } = vesselPaths(p, j);
-      const trialU = Math.min(1, nav.u + live / VESSEL_WALL.approach);
-      const nxt = pathAtXZ(approach, smooth01(trialU));
-      if (!blockedByOthers(p.id, nxt.x, nxt.z, current)) {
-        nav.u = trialU;
-        if (nav.u >= 1) {
-          nav.stage = "dock";
-          nav.dockT = 0;
-          nav.u = 1;
-          row.x = b.x; row.z = dockZ; row.phase = "dock";
+          if (nav.stage === "approach") {
+            nav.stage = "dock";
+            nav.dockT = 0;
+            nav.u = 1;
+            row.x = paths.b.x; row.z = paths.dockZ; row.phase = "dock";
+          } else {
+            nav.stage = "park";
+            nav.u = 1;
+            row.x = p.parkPos.x; row.z = p.parkPos.z; row.phase = "park";
+          }
         } else {
           const pose = poseForNav(p, j, nav);
           row.x = pose.x; row.z = pose.z; row.phase = pose.phase;
@@ -782,37 +827,44 @@ function stepAllVesselTargets(dt) {
     }
   }
 
-  // 2) Admit at most one new approach — earliest schedule start among ready ships
+  // FIFO: one inbound at a time; bake live hull pose as path start (no snap)
   if (live > 0 && approachSlotFree(-1)) {
     let best = null;
     for (const p of state.parcels) {
       const j = plan.jobs.find((x) => x.id === p.id);
       const nav = vesselNav.get(p.id);
       if (!j || nav.stage !== "queue") continue;
-      const moor = j.moor ?? 0.25;
-      const leaveAt = j.start - moor - 0.5;
-      if (t < leaveAt) continue;
-      if (!berthVisuallyClear(j.berth, p.id)) continue;
+      const leaveAt = j.start - (j.moor ?? 0.25) - 0.5;
+      if (t < leaveAt || !berthVisuallyClear(j.berth, p.id)) continue;
       if (!best || j.start < best.j.start || (j.start === best.j.start && p.id < best.p.id)) {
         best = { p, j };
       }
     }
     if (best) {
       const nav = vesselNav.get(best.p.id);
+      const mesh = vesselMeshes.get(best.p.id);
+      nav.sx = mesh ? mesh.position.x : best.p.waitPos.x;
+      nav.sz = Math.max(
+        mesh ? mesh.position.z : best.p.waitPos.z,
+        seaLaneMinZ(best.p)
+      );
       nav.stage = "approach";
       nav.u = 0;
     }
   }
 
-  // 3) Emit final poses + resolve residual overlaps (all phases except dock locked)
   const out = [];
   for (const p of state.parcels) {
     const j = plan.jobs.find((x) => x.id === p.id);
     const nav = vesselNav.get(p.id);
     const pose = poseForNav(p, j, nav);
-    out.push({ id: p.id, dir: p.dir, j, mesh: vesselMeshes.get(p.id), ...pose });
+    out.push({ id: p.id, dir: p.dir, j, mesh: vesselMeshes.get(p.id), parcel: p, ...pose });
   }
-  separateVessels(out);
+  // Idle ships only — never shove a hull mid-moor / mid-cast
+  const idle = out.filter((r) => r.phase === "queue" || r.phase === "park");
+  separateVessels(idle);
+  for (const r of idle) clampPoseClearOfJetty(r, r.parcel);
+  for (const r of out) clampPoseClearOfJetty(r, r.parcel);
   return out;
 }
 
@@ -830,42 +882,39 @@ function snapVesselsToQueue() {
   }
 }
 
-/**
- * Push overlapping hulls apart. Docked ships are anchors (others move).
- * Runs for queue / fairway / park — stops stacking and overtaking pile-ups.
- */
+/** Soft separation for queue/park only (mutates rows in place). Never push into jetty. */
 function separateVessels(positions) {
   const minX = VESSEL.sepX;
   const minZ = VESSEL.sepZ;
-  for (let iter = 0; iter < 4; iter++) {
+  for (let iter = 0; iter < 3; iter++) {
     for (let i = 0; i < positions.length; i++) {
       for (let k = i + 1; k < positions.length; k++) {
         const a = positions[i], b = positions[k];
         const dx = a.x - b.x, dz = a.z - b.z;
         const ax = Math.abs(dx), az = Math.abs(dz);
         if (ax >= minX || az >= minZ) continue;
-        const aDock = a.phase === "dock";
-        const bDock = b.phase === "dock";
-        const pushX = (minX - ax) * 0.5 + 0.04;
-        const pushZ = (minZ - az) * 0.5 + 0.04;
+        const pushX = (minX - ax) * 0.4 + 0.03;
+        const pushZ = (minZ - az) * 0.4 + 0.03;
         const sx = dx === 0 ? (a.id < b.id ? 1 : -1) : Math.sign(dx);
         const sz = dz === 0 ? (a.id < b.id ? 1 : -1) : Math.sign(dz);
         if (minX - ax >= minZ - az) {
-          if (aDock && !bDock) b.x -= sx * pushX * 2;
-          else if (bDock && !aDock) a.x += sx * pushX * 2;
-          else if (!aDock && !bDock) {
-            a.x += sx * pushX;
-            b.x -= sx * pushX;
-          }
+          a.x += sx * pushX;
+          b.x -= sx * pushX;
         } else {
-          if (aDock && !bDock) b.z -= sz * pushZ * 2;
-          else if (bDock && !aDock) a.z += sz * pushZ * 2;
-          else if (!aDock && !bDock) {
-            a.z += sz * pushZ;
-            b.z -= sz * pushZ;
+          // Prefer pushing seaward (+Z) over into the jetty (−Z)
+          if (sz > 0) {
+            a.z += pushZ;
+            b.z -= pushZ * 0.25;
+          } else {
+            b.z += pushZ;
+            a.z -= pushZ * 0.25;
           }
         }
       }
+    }
+    for (const r of positions) {
+      const p = r.parcel || state.parcels.find((x) => x.id === r.id);
+      clampPoseClearOfJetty(r, p);
     }
   }
 }
@@ -876,6 +925,54 @@ function tubeFromPoints(points, radius, color) {
   const mesh = new THREE.Mesh(geo, mat(color, { metalness: 0.35, roughness: 0.35 }));
   mesh.castShadow = true;
   return { mesh, curve };
+}
+
+/** Straight-segment pipe (no CatmullRom overshoot — use for tank shell connections). */
+function tubeFromPolyline(points, radius, color) {
+  const path = new THREE.CurvePath();
+  for (let i = 1; i < points.length; i++) {
+    path.add(new THREE.LineCurve3(points[i - 1].clone(), points[i].clone()));
+  }
+  const segs = Math.max(8, (points.length - 1) * 6);
+  const geo = new THREE.TubeGeometry(path, segs, radius, 10, false);
+  const mesh = new THREE.Mesh(geo, mat(color, { metalness: 0.35, roughness: 0.35 }));
+  mesh.castShadow = true;
+  return { mesh, curve: path };
+}
+
+/** Exact cylinder between two points (no TubeGeometry end-cap overshoot). */
+function addPipeSegment(group, a, b, radius, color) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  if (len < 1e-4) return;
+  const mesh = cyl(radius, radius, len, color, { metalness: 0.35, roughness: 0.35 });
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  group.add(mesh);
+}
+
+/** Polyline as discrete cylinders — termini land exactly on the last point. */
+function addPipePolyline(group, points, radius, color) {
+  for (let i = 1; i < points.length; i++) {
+    addPipeSegment(group, points[i - 1], points[i], radius, color);
+  }
+}
+
+/**
+ * Nozzle flange seated on the outer shell, extending only outward.
+ * shellPos = wall contact; outwardDir points away from tank center.
+ */
+function addTankNozzle(group, shellPos, outwardDir, radius = 0.12) {
+  const n = outwardDir.clone().normalize();
+  const len = 0.22;
+  const boss = cyl(radius, radius * 1.05, len, 0x475569, { metalness: 0.55 });
+  boss.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
+  boss.position.copy(shellPos).addScaledVector(n, len / 2);
+  group.add(boss);
+  const flange = cyl(radius * 1.55, radius * 1.55, 0.045, 0x64748b, { metalness: 0.45 });
+  flange.quaternion.copy(boss.quaternion);
+  flange.position.copy(shellPos).addScaledVector(n, len);
+  group.add(flange);
 }
 
 /** Blind flange / end-cap so runs never look open-ended. `dir` = outward along pipe. */
@@ -1172,32 +1269,45 @@ function buildBerthMesh(name = "Berth") {
   g.userData.outLen = outLen;
   elbow.add(mlaTube(outLen, 0.12, 0xf59e0b));
 
-  // style + QCDC coupler (blind face — couples to ship manifold, no open bore)
+  // style + QCDC under styleRoot — final handshake offset snaps tip onto ship nozzle
   const wrist = new THREE.Group();
   wrist.name = "wrist";
   wrist.position.set(0, 0, outLen);
   elbow.add(wrist);
+  const styleRoot = new THREE.Group();
+  styleRoot.name = "styleRoot";
+  wrist.add(styleRoot);
   const styleHub = cyl(0.17, 0.17, 0.3, 0x334155, { metalness: 0.5 });
   styleHub.rotation.x = Math.PI / 2;
-  wrist.add(styleHub);
+  styleRoot.add(styleHub);
   const style = cyl(0.1, 0.13, 0.95, 0x475569, { metalness: 0.5 });
   style.position.set(0, -0.4, 0.18);
-  wrist.add(style);
+  styleRoot.add(style);
   const styleFlange = cyl(0.2, 0.2, 0.08, 0x334155, { metalness: 0.55 });
   styleFlange.position.set(0, -0.78, 0.18);
-  wrist.add(styleFlange);
-  const coupler = cyl(0.24, 0.24, 0.18, 0x0f172a, { metalness: 0.6 });
+  styleRoot.add(styleFlange);
+  const coupler = cyl(0.24, 0.26, 0.2, 0x0f172a, { metalness: 0.65 });
   coupler.position.set(0, -0.92, 0.18);
   coupler.name = "coupler";
-  wrist.add(coupler);
-  // QCDC sealing face (closed — not an open pipe stub)
-  const qcdcFace = cyl(0.2, 0.2, 0.06, 0x475569, { metalness: 0.5 });
-  qcdcFace.position.set(0, -1.04, 0.18);
-  wrist.add(qcdcFace);
-  const clamp = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.045, 8, 20), mat(0x64748b, { metalness: 0.45 }));
+  styleRoot.add(coupler);
+  const qcdcFace = cyl(0.22, 0.22, 0.07, 0x475569, { metalness: 0.55 });
+  qcdcFace.position.set(0, -1.06, 0.18);
+  qcdcFace.name = "qcdcFace";
+  styleRoot.add(qcdcFace);
+  const tip = new THREE.Object3D();
+  tip.name = "qcdcTip";
+  tip.position.set(0, -1.12, 0.18);
+  styleRoot.add(tip);
+  const clamp = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.05, 8, 22), mat(0x64748b, { metalness: 0.45 }));
   clamp.position.set(0, -0.92, 0.18);
   clamp.name = "clamp";
-  wrist.add(clamp);
+  styleRoot.add(clamp);
+  for (const ang of [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5]) {
+    const pad = box(0.1, 0.08, 0.14, 0xf59e0b, { metalness: 0.4 });
+    pad.position.set(Math.cos(ang) * 0.3, -0.92, 0.18 + Math.sin(ang) * 0.3);
+    pad.name = "latchPad";
+    styleRoot.add(pad);
+  }
 
   const ring = new THREE.Mesh(
     new THREE.SphereGeometry(0.12, 12, 10),
@@ -1208,67 +1318,226 @@ function buildBerthMesh(name = "Berth") {
   g.add(ring);
 
   g.userData.hover = { kind: "berth", title: name, detail: "MLA · QCDC · ERS" };
+  g.userData.qcdcLocked = false;
+  g.userData.clickFlash = 0;
   setBerthArmPose(g, 0);
   return g;
 }
 
+/** Short mechanical “click” when QCDC latches to the ship nozzle. */
+let _audioCtx = null;
+function playConnectClick() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    _audioCtx = _audioCtx || new AC();
+    if (_audioCtx.state === "suspended") _audioCtx.resume();
+    const t0 = _audioCtx.currentTime;
+    const o = _audioCtx.createOscillator();
+    const g = _audioCtx.createGain();
+    o.type = "square";
+    o.frequency.setValueAtTime(2100, t0);
+    o.frequency.exponentialRampToValueAtTime(180, t0 + 0.055);
+    g.gain.setValueAtTime(0.14, t0);
+    g.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.07);
+    o.connect(g);
+    g.connect(_audioCtx.destination);
+    o.start(t0);
+    o.stop(t0 + 0.08);
+    // soft body thump under the click
+    const o2 = _audioCtx.createOscillator();
+    const g2 = _audioCtx.createGain();
+    o2.type = "triangle";
+    o2.frequency.setValueAtTime(90, t0);
+    g2.gain.setValueAtTime(0.1, t0);
+    g2.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.1);
+    o2.connect(g2);
+    g2.connect(_audioCtx.destination);
+    o2.start(t0);
+    o2.stop(t0 + 0.11);
+  } catch (_) { /* autoplay / unsupported */ }
+}
+
 /**
- * MLA pose. rotation.x: 0 = along +Z (seaward), −π/2 = upright +Y (clear of deck).
- * u=0 resting; u=1 connected. Optional targetLocal = manifold pos in berth-local space.
+ * CCD: drive qcdcTip onto targetWorld by rotating arm joints (true geometric mate).
  */
-function setBerthArmPose(g, u, targetLocal = null) {
+function refineTipToTarget(g, targetWorld, iters = 10, strength = 1) {
+  const tip = g.getObjectByName("qcdcTip");
+  if (!tip || !targetWorld) return Infinity;
+  const joints = [
+    { node: g.getObjectByName("armRoot"), axis: new THREE.Vector3(0, 1, 0), min: -0.65, max: 0.65, prop: "y" },
+    { node: g.getObjectByName("shoulder"), axis: new THREE.Vector3(1, 0, 0), min: -1.58, max: -0.05, prop: "x" },
+    { node: g.getObjectByName("elbow"), axis: new THREE.Vector3(1, 0, 0), min: 0.15, max: 2.55, prop: "x" },
+    { node: g.getObjectByName("wrist"), axis: new THREE.Vector3(1, 0, 0), min: -0.15, max: 1.45, prop: "x" },
+  ];
+  for (let iter = 0; iter < iters; iter++) {
+    for (const j of joints) {
+      if (!j.node) continue;
+      g.updateMatrixWorld(true);
+      const tipW = new THREE.Vector3();
+      tip.getWorldPosition(tipW);
+      const origin = new THREE.Vector3();
+      j.node.getWorldPosition(origin);
+      const axisW = j.axis.clone().transformDirection(j.node.matrixWorld).normalize();
+      const v1 = tipW.clone().sub(origin);
+      const v2 = targetWorld.clone().sub(origin);
+      v1.sub(axisW.clone().multiplyScalar(v1.dot(axisW)));
+      v2.sub(axisW.clone().multiplyScalar(v2.dot(axisW)));
+      if (v1.lengthSq() < 1e-10 || v2.lengthSq() < 1e-10) continue;
+      v1.normalize();
+      v2.normalize();
+      let ang = Math.acos(THREE.MathUtils.clamp(v1.dot(v2), -1, 1)) * strength;
+      const cross = new THREE.Vector3().crossVectors(v1, v2);
+      if (cross.dot(axisW) < 0) ang = -ang;
+      const cur = j.node.rotation[j.prop];
+      j.node.rotation[j.prop] = THREE.MathUtils.clamp(cur + ang, j.min, j.max);
+    }
+  }
+  g.updateMatrixWorld(true);
+  const tipW = new THREE.Vector3();
+  tip.getWorldPosition(tipW);
+  return tipW.distanceTo(targetWorld);
+}
+
+/** Translate styleRoot so tip coincides with nozzle (zero residual gap). */
+function snapStyleRootToNozzle(g, targetWorld, blend = 1) {
+  const tip = g.getObjectByName("qcdcTip");
+  const styleRoot = g.getObjectByName("styleRoot");
+  const wrist = g.getObjectByName("wrist");
+  if (!tip || !styleRoot || !wrist || !targetWorld) return;
+  g.updateMatrixWorld(true);
+  const tipW = new THREE.Vector3();
+  tip.getWorldPosition(tipW);
+  const inv = new THREE.Matrix4().copy(wrist.matrixWorld).invert();
+  const tipL = tipW.clone().applyMatrix4(inv);
+  const nozL = targetWorld.clone().applyMatrix4(inv);
+  const delta = nozL.sub(tipL);
+  styleRoot.position.x = THREE.MathUtils.lerp(styleRoot.position.x, styleRoot.position.x + delta.x, blend);
+  styleRoot.position.y = THREE.MathUtils.lerp(styleRoot.position.y, styleRoot.position.y + delta.y, blend);
+  styleRoot.position.z = THREE.MathUtils.lerp(styleRoot.position.z, styleRoot.position.z + delta.z, blend);
+  // keep handshake offset bounded (style stretch only)
+  styleRoot.position.x = THREE.MathUtils.clamp(styleRoot.position.x, -0.45, 0.45);
+  styleRoot.position.y = THREE.MathUtils.clamp(styleRoot.position.y, -0.55, 0.55);
+  styleRoot.position.z = THREE.MathUtils.clamp(styleRoot.position.z, -0.45, 0.45);
+}
+
+/**
+ * MLA pose. u=0 resting; u→1 reaches then handshakes tip onto ship nozzle (world).
+ * targetWorld = vessel manFace world position (not berth-local).
+ */
+function setBerthArmPose(g, u, targetWorld = null, opts = {}) {
   const t = Math.max(0, Math.min(1, u));
   const ease = t * t * (3 - 2 * t);
   const shoulder = g.getObjectByName("shoulder");
   const elbow = g.getObjectByName("elbow");
   const wrist = g.getObjectByName("wrist");
   const armRoot = g.getObjectByName("armRoot");
+  const styleRoot = g.getObjectByName("styleRoot");
   const clamp = g.getObjectByName("clamp");
+  const coupler = g.getObjectByName("coupler");
+  const qcdcFace = g.getObjectByName("qcdcFace");
   if (!shoulder || !elbow || !wrist || !armRoot) return;
 
-  // Resting keyframe — upright, counterweight aft, clear of deck (article “resting” position)
-  let sh = -1.48, el = 0.2, wr = 0.15, yaw = 0.1;
+  if (styleRoot && t < 0.05) styleRoot.position.set(0, 0, 0);
 
-  if (ease > 0.001) {
-    // Two-bone IK in berth YZ toward ship manifold (QCDC hangs ~0.9 below wrist)
+  if (opts.trackOnly && targetWorld) {
+    // already near nozzle — only CCD + hard seat (no re-seed from rest)
+    refineTipToTarget(g, targetWorld, 10, 0.9);
+    snapStyleRootToNozzle(g, targetWorld, 1);
+  } else if (ease > 0.001 && targetWorld) {
+    // seed from analytic reach, then CCD tip onto ship nozzle
+    const root = armRoot.position;
+    const targetLocal = g.worldToLocal(targetWorld.clone());
+    const tipDrop = 1.05;
+    const tx = targetLocal.x - root.x;
+    const ty = targetLocal.y + tipDrop - root.y;
+    const tz = targetLocal.z - root.z;
     const L1 = g.userData.inLen || 2.05;
-    const L2 = (g.userData.outLen || 1.85) + 0.15;
-    const root = armRoot.position; // local to berth
-    let ty = 1.3 - root.y;   // default manifold height
-    let tz = 2.55 - root.z; // default reach past fenders
-    if (targetLocal) {
-      ty = targetLocal.y + 0.85 - root.y; // aim wrist above flange (style drop)
-      tz = targetLocal.z - root.z;
-    }
-    const dist = Math.hypot(ty, tz);
-    const d = Math.max(0.35, Math.min(L1 + L2 - 0.08, dist || 0.35));
-    // angles from +Z: +rot.x moves tip toward −Y (down)
+    const L2 = (g.userData.outLen || 1.85) + 0.12;
+    const distYZ = Math.hypot(ty, tz);
+    const d = Math.max(0.4, Math.min(L1 + L2 - 0.05, distYZ || 0.4));
     const reach = Math.atan2(-ty, Math.max(0.08, tz));
     const cosEl = (L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2);
     const elbowBend = Math.acos(THREE.MathUtils.clamp(cosEl, -1, 1));
     const cosSh = (L1 * L1 + d * d - L2 * L2) / (2 * L1 * d);
     const offset = Math.acos(THREE.MathUtils.clamp(cosSh, -1, 1));
-    // elbow-down arch over water — never pitch arms into the deck
-    let shConn = THREE.MathUtils.clamp(reach - offset, -1.55, -0.12);
-    let elConn = THREE.MathUtils.clamp(Math.PI - elbowBend, 0.35, 2.35);
+    let shConn = THREE.MathUtils.clamp(reach - offset, -1.55, -0.05);
+    let elConn = THREE.MathUtils.clamp(Math.PI - elbowBend, 0.2, 2.5);
     if (!Number.isFinite(shConn)) shConn = -0.55;
     if (!Number.isFinite(elConn)) elConn = 1.2;
-    sh = THREE.MathUtils.lerp(-1.48, shConn, ease);
-    el = THREE.MathUtils.lerp(0.2, elConn, ease);
-    wr = THREE.MathUtils.lerp(0.15, 0.7, ease);
-    yaw = THREE.MathUtils.lerp(0.1, 0, ease);
+    const yawConn = THREE.MathUtils.clamp(Math.atan2(tx, Math.max(0.2, tz)), -0.65, 0.65);
+    armRoot.rotation.y = THREE.MathUtils.lerp(0.1, yawConn, ease);
+    shoulder.rotation.x = THREE.MathUtils.lerp(-1.48, shConn, ease);
+    elbow.rotation.x = THREE.MathUtils.lerp(0.2, elConn, ease);
+    wrist.rotation.x = THREE.MathUtils.lerp(0.15, 0.9, ease);
+
+    const ccdStrength = 0.35 + 0.65 * ease;
+    const ccdIters = t < 0.5 ? 4 : 12;
+    refineTipToTarget(g, targetWorld, ccdIters, ccdStrength);
+
+    if (t >= 0.72) {
+      const blend = t < 0.9 ? (t - 0.72) / 0.18 : 1;
+      snapStyleRootToNozzle(g, targetWorld, blend);
+      refineTipToTarget(g, targetWorld, 4, 0.5);
+      if (t >= 0.9) snapStyleRootToNozzle(g, targetWorld, 1);
+    }
+  } else if (ease > 0.001) {
+    armRoot.rotation.y = THREE.MathUtils.lerp(0.1, 0, ease);
+    shoulder.rotation.x = THREE.MathUtils.lerp(-1.48, -0.55, ease);
+    elbow.rotation.x = THREE.MathUtils.lerp(0.2, 1.2, ease);
+    wrist.rotation.x = THREE.MathUtils.lerp(0.15, 0.7, ease);
+  } else {
+    armRoot.rotation.y = 0.1;
+    shoulder.rotation.x = -1.48;
+    elbow.rotation.x = 0.2;
+    wrist.rotation.x = 0.15;
   }
 
-  armRoot.rotation.y = yaw;
-  shoulder.rotation.x = sh;
-  elbow.rotation.x = el;
-  wrist.rotation.x = wr;
-  if (clamp?.material) {
-    clamp.material.color.set(ease > 0.92 ? 0x22c55e : 0x64748b);
-    if (!clamp.material.emissive) clamp.material.emissive = new THREE.Color(0x000000);
-    clamp.material.emissive.set(ease > 0.92 ? 0x166534 : 0x000000);
-    clamp.material.emissiveIntensity = ease > 0.92 ? 0.45 : 0;
+  // measure true tip–nozzle gap after posing
+  let gap = Infinity;
+  if (targetWorld) {
+    const tip = g.getObjectByName("qcdcTip");
+    if (tip) {
+      g.updateMatrixWorld(true);
+      const tipW = new THREE.Vector3();
+      tip.getWorldPosition(tipW);
+      gap = tipW.distanceTo(targetWorld);
+    }
   }
+  g.userData.qcdcGap = gap;
+
+  const locked = !!opts.locked || (t >= 0.92 && gap < 0.08);
+  const flash = opts.flash || 0;
+  let clampScale = 1.4 - 0.4 * Math.min(1, t / 0.85);
+  if (locked) clampScale = 0.9 + flash * 0.4;
+  else if (t > 0.85) clampScale = THREE.MathUtils.lerp(1.05, 0.9, (t - 0.85) / 0.15);
+  if (clamp) clamp.scale.set(clampScale, clampScale, clampScale);
+
+  if (clamp?.material) {
+    clamp.material.color.set(locked ? 0x22c55e : t > 0.7 ? 0xf59e0b : 0x64748b);
+    if (!clamp.material.emissive) clamp.material.emissive = new THREE.Color(0x000000);
+    clamp.material.emissive.set(locked ? 0x166534 : 0x000000);
+    clamp.material.emissiveIntensity = locked ? 0.55 + flash * 0.8 : 0;
+  }
+  if (coupler?.material) {
+    coupler.material.color.set(locked ? 0x14532d : 0x0f172a);
+    if (!coupler.material.emissive) coupler.material.emissive = new THREE.Color(0x000000);
+    coupler.material.emissive.set(locked ? 0x22c55e : 0x000000);
+    coupler.material.emissiveIntensity = locked ? 0.35 + flash * 1.2 : 0;
+  }
+  if (qcdcFace?.material) {
+    qcdcFace.material.color.set(locked ? 0x4ade80 : 0x475569);
+    if (!qcdcFace.material.emissive) qcdcFace.material.emissive = new THREE.Color(0x000000);
+    qcdcFace.material.emissive.set(locked ? 0x22c55e : 0x000000);
+    qcdcFace.material.emissiveIntensity = locked ? 0.45 + flash * 1.4 : 0;
+  }
+  g.traverse((o) => {
+    if (o.name === "latchPad" && o.material) {
+      o.material.color.set(locked ? 0x22c55e : 0xf59e0b);
+      o.visible = t > 0.45;
+    }
+  });
+  return { gap, locked };
 }
 
 /** Shared trestle: piled walkway + elevated multi-line pipe rack shore → jetty head. */
@@ -1457,86 +1726,73 @@ function buildSharedPipelines(grades) {
     addPipeFitting(pipes, new THREE.Vector3(mid, 1.05, exportManZ + 1.85), "pig");
   }
 
-  // ——— 3. Per-tank dedicated stubs — pipes end at shell face (no penetration into tank) ———
-  const TANK_R = 1.4; // matches shell CylinderGeometry radius in regenerate()
+  // ——— 3. Per-tank stubs — centerline stops on outer wall (no penetration) ———
+  const TANK_R = 1.42; // outer rim (shell 1.4 + band)
+  const STANDOFF = 0.85; // column/elbow distance outside the wall
   state.tanks.forEach((t, i) => {
     const col = PRODUCTS[i].color;
-    const shellInZ = t.z - TANK_R;  // landward outer wall (−Z)
-    const shellOutZ = t.z + TANK_R; // seaward outer wall (+Z)
+    const inY = 1.85;
+    const outY = 1.55;
+    // wall contact points (radial faces)
+    const shellIn = new THREE.Vector3(t.x, inY, t.z - TANK_R);
+    const shellOut = new THREE.Vector3(t.x, outY, t.z + TANK_R);
+    // elbows fully outside; last segment runs radially TO the wall
+    const inElbow = new THREE.Vector3(t.x, inY, t.z - TANK_R - STANDOFF);
+    const outElbow = new THREE.Vector3(t.x, outY, t.z + TANK_R + STANDOFF);
 
-    // inlet: header → valve → riser outside shell → flange on tank body (terminus)
     const tee = new THREE.Vector3(t.x, 0.5, receiptZ);
-    const riseZ = shellInZ - 0.55; // fully outside shell
-    const tankNoz = new THREE.Vector3(t.x, 1.85, shellInZ); // connection = end of pipe
     const inletStub = [
       tee,
-      new THREE.Vector3(t.x, 0.5, riseZ),
-      new THREE.Vector3(t.x, 1.85, riseZ),
-      tankNoz,
+      new THREE.Vector3(t.x, 0.5, inElbow.z),
+      inElbow.clone(),
+      shellIn.clone(), // terminus on wall
     ];
-    pipes.add(tubeFromPoints(inletStub, 0.09, col).mesh);
+    addPipePolyline(pipes, inletStub, 0.09, col);
     addPipeNode(pipes, tee, 0.1, 0x64748b);
-    addPipeFitting(pipes, new THREE.Vector3(t.x, 0.5, riseZ), "valve");
-    // nozzle boss on shell (outward only — no tail inside tank)
-    const inBoss = cyl(0.14, 0.14, 0.22, 0x475569, { metalness: 0.5 });
-    inBoss.rotation.x = Math.PI / 2;
-    inBoss.position.set(t.x, 1.85, shellInZ - 0.08);
-    pipes.add(inBoss);
-    addPipeFlangePair(pipes, tankNoz, new THREE.Vector3(0, 0, -1), 0.09);
-    const inFlow = [
-      new THREE.Vector3(-14, 0.5, receiptZ),
-      tee,
-      ...inletStub.slice(1),
-    ];
-    state.pipePaths.push({ kind: "inbound-to-tank", productIndex: i, product: t.product, points: inFlow });
+    addPipeFitting(pipes, new THREE.Vector3(t.x, 0.5, inElbow.z), "valve");
+    addTankNozzle(pipes, shellIn, new THREE.Vector3(0, 0, -1), 0.11);
+    state.pipePaths.push({
+      kind: "inbound-to-tank", productIndex: i, product: t.product,
+      points: [new THREE.Vector3(-14, 0.5, receiptZ), tee, ...inletStub.slice(1)],
+    });
 
-    // outlet: shell nozzle → drop outside → collection header
-    const outNoz = new THREE.Vector3(t.x, 1.55, shellOutZ);
-    const outDropZ = shellOutZ + 0.55;
     const headerTee = new THREE.Vector3(t.x, colY, colZ);
     const outletVisual = [
-      outNoz,
-      new THREE.Vector3(t.x, 1.55, outDropZ),
-      new THREE.Vector3(t.x, 0.7, outDropZ),
+      shellOut.clone(), // start on wall
+      outElbow.clone(),
+      new THREE.Vector3(t.x, 0.7, outElbow.z),
       headerTee,
     ];
-    pipes.add(tubeFromPoints(outletVisual, 0.1, col).mesh);
-    const outBoss = cyl(0.15, 0.15, 0.22, 0x475569, { metalness: 0.5 });
-    outBoss.rotation.x = Math.PI / 2;
-    outBoss.position.set(t.x, 1.55, shellOutZ + 0.08);
-    pipes.add(outBoss);
-    addPipeFlangePair(pipes, outNoz, new THREE.Vector3(0, 0, 1), 0.1);
-    addPipeFitting(pipes, new THREE.Vector3(t.x, 0.7, outDropZ), "valve");
+    addPipePolyline(pipes, outletVisual, 0.1, col);
+    addTankNozzle(pipes, shellOut, new THREE.Vector3(0, 0, 1), 0.12);
+    addPipeFitting(pipes, new THREE.Vector3(t.x, 0.7, outElbow.z), "valve");
     addPipeNode(pipes, headerTee, 0.1, 0x94a3b8);
     if (cx >= 2) addPipeFitting(pipes, new THREE.Vector3(t.x, 0.55, exportManZ - 1.3), "valve");
-    const outletStub = [
-      ...outletVisual,
-      manIn.clone(),
-      new THREE.Vector3(mid, 0.7, exportManZ),
-      manOut.clone(),
-    ];
-    state.pipePaths.push({ kind: "tank-to-man", productIndex: i, product: t.product, points: outletStub });
+    state.pipePaths.push({
+      kind: "tank-to-man", productIndex: i, product: t.product,
+      points: [...outletVisual, manIn.clone(), new THREE.Vector3(mid, 0.7, exportManZ), manOut.clone()],
+    });
   });
 
-  // Complex only: TFT header — stubs end on seaward shell, not inside tank
+  // Complex only: TFT — stubs terminate on seaward shell
   if (cx >= 3 && state.tanks.length >= 2) {
-    const tftZ = tankZ + TANK_R + 0.85;
+    const tftZ = tankZ + TANK_R + 1.0;
     const tftY = 0.35;
     const tft0 = new THREE.Vector3(manX0, tftY, tftZ);
     const tft1 = new THREE.Vector3(manX1, tftY, tftZ);
-    pipes.add(tubeFromPoints([tft0, tft1], 0.07, 0x78716c).mesh);
+    addPipePolyline(pipes, [tft0, tft1], 0.07, 0x78716c);
     addPipeCap(pipes, tft0, new THREE.Vector3(-1, 0, 0), 0.07);
     addPipeCap(pipes, tft1, new THREE.Vector3(1, 0, 0), 0.07);
     state.tanks.forEach((t) => {
-      const shellOutZ = t.z + TANK_R;
-      const noz = new THREE.Vector3(t.x, 0.95, shellOutZ);
+      const shellOut = new THREE.Vector3(t.x, 0.95, t.z + TANK_R);
+      const elbow = new THREE.Vector3(t.x, 0.95, tftZ);
       const tee = new THREE.Vector3(t.x, tftY, tftZ);
-      pipes.add(tubeFromPoints([
-        noz,
-        new THREE.Vector3(t.x, 0.95, shellOutZ + 0.45),
-        new THREE.Vector3(t.x, tftY, tftZ),
-      ], 0.06, 0x78716c).mesh);
-      addPipeFlangePair(pipes, noz, new THREE.Vector3(0, 0, 1), 0.06);
+      addPipePolyline(pipes, [
+        shellOut.clone(),
+        elbow,
+        tee,
+      ], 0.06, 0x78716c);
+      addTankNozzle(pipes, shellOut, new THREE.Vector3(0, 0, 1), 0.08);
       addPipeFitting(pipes, new THREE.Vector3(t.x, tftY + 0.15, tftZ), "valve");
       addPipeNode(pipes, tee, 0.07, 0x78716c);
     });
@@ -1667,6 +1923,8 @@ function regenerate() {
     const due = 6 + approxServe * 2.2 + i * 1.4 + (i % 3);
     const baseRate = TERMINAL.pumpM3H;
     const tag = dir === "in" ? "D" : "L"; // Discharge / Load
+    const volRef = tankCapM3 * 0.18;
+    const hullScale = Math.max(0.72, Math.min(1.35, Math.sqrt(vol / Math.max(1, volRef))));
     state.parcels.push({
       id: i,
       name: `${p.id}_${tag}${i + 1}`,
@@ -1676,6 +1934,7 @@ function regenerate() {
       priority: 3 + (i % 7),
       demRate: p.id === "JetFuel" ? 900 : p.id === "Gasoline" ? 500 : 400,
       baseRate,
+      hullScale,
       waitPos: waitSlots[i],
       parkPos: parkSlots[i],
     });
@@ -1813,12 +2072,10 @@ function regenerate() {
   buildSharedPipelines(grades);
 
   // vessel meshes — hull scale tracks request qty
-  const volRef = tankCapM3 * 0.18;
   for (const p of state.parcels) {
     const prod = grades[p.productIndex];
     const vessel = new THREE.Group();
-    const sz = Math.sqrt(p.volume / Math.max(1, volRef));
-    const s = Math.max(0.72, Math.min(1.35, sz));
+    const s = p.hullScale || 1;
     const hull = box(3.1 * s, 0.75 * s, 1.2 * s, 0x1e293b, { metalness: 0.35 });
     hull.position.y = 0.45 * s;
     vessel.add(hull);
@@ -1839,27 +2096,42 @@ function regenerate() {
     cargo.scale.x = p.dir === "in" ? 1 : 0.05;
     cargo.name = "cargo";
     vessel.add(cargo);
-    // midship cargo manifold on shore side (−Z) — closed run from cargo to QCDC face
+    // midship cargo nozzle on shore side (−Z) — MLA QCDC mates here
     const manX = 0.1 * s, manY = 1.35 * s;
-    vessel.add(tubeFromPoints([
+    vessel.add(tubeFromPolyline([
       new THREE.Vector3(manX, 0.95 * s, 0),
       new THREE.Vector3(manX, manY, -0.25 * s),
-      new THREE.Vector3(manX, manY, -0.55 * s),
+      new THREE.Vector3(manX, manY, -0.52 * s),
     ], 0.08 * s, 0x64748b).mesh);
     const manifold = cyl(0.16 * s, 0.2 * s, 0.28 * s, 0x475569, { metalness: 0.55 });
     manifold.position.set(manX, manY, -0.58 * s);
     manifold.name = "manifold";
     vessel.add(manifold);
-    const manFlange = cyl(0.26 * s, 0.26 * s, 0.1 * s, 0x0f172a, { metalness: 0.5 });
+    const manFlange = cyl(0.28 * s, 0.28 * s, 0.1 * s, 0x0f172a, { metalness: 0.55 });
     manFlange.rotation.x = Math.PI / 2;
-    manFlange.position.set(manX, manY, -0.78 * s);
+    manFlange.position.set(manX, manY, -0.76 * s);
     manFlange.name = "manFlange";
     vessel.add(manFlange);
-    // sealing face (presentation flange for MLA — not an open bore)
-    const manFace = cyl(0.18 * s, 0.18 * s, 0.05 * s, 0x334155, { metalness: 0.55 });
+    // ship nozzle face — target for QCDC tip
+    const manFace = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2 * s, 0.2 * s, 0.07 * s, 20),
+      new THREE.MeshStandardMaterial({
+        color: 0x334155, metalness: 0.55, roughness: 0.35,
+        emissive: 0x000000, emissiveIntensity: 0,
+      })
+    );
     manFace.rotation.x = Math.PI / 2;
-    manFace.position.set(manX, manY, -0.86 * s);
+    manFace.position.set(manX, manY, -0.84 * s);
+    manFace.name = "manFace";
     vessel.add(manFace);
+    // guide ring helps read the mate
+    const manRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.26 * s, 0.03 * s, 8, 20),
+      new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.4, roughness: 0.4 })
+    );
+    manRing.position.set(manX, manY, -0.84 * s);
+    manRing.name = "manRing";
+    vessel.add(manRing);
     vessel.position.set(p.waitPos.x, 0, p.waitPos.z);
     vessel.userData.hover = { kind: "parcel", parcelId: p.id };
     entities.add(vessel);
@@ -2442,21 +2714,34 @@ function animateScene(dt) {
     const { phase } = row;
     const prevX = mesh.position.x;
     const prevZ = mesh.position.z;
-    const k = phase === "queue" || phase === "park" || phase === "dock"
-      ? 1 - Math.exp(-dt / 0.12)
-      : 1 - Math.exp(-dt / 0.08);
-    mesh.position.x += (row.x - mesh.position.x) * k;
-    mesh.position.z += (row.z - mesh.position.z) * k;
+    const moving = phase === "to-fairway" || phase === "along-fairway" || phase === "final"
+      || phase === "undock" || phase === "to-park";
+    // Voyage path is already paced — follow exactly (lag caused snaps vs path)
+    const p = row.parcel || state.parcels.find((x) => x.id === row.id);
+    clampPoseClearOfJetty(row, p);
+    if (moving || phase === "dock") {
+      mesh.position.x = row.x;
+      mesh.position.z = row.z;
+    } else {
+      const k = 1 - Math.exp(-dt / 0.22);
+      mesh.position.x += (row.x - mesh.position.x) * k;
+      mesh.position.z += (row.z - mesh.position.z) * k;
+      // hard stop if easing still drifts into the jetty
+      const minZ = seaLaneMinZ(p);
+      if (mesh.position.z < minZ) mesh.position.z = minZ;
+    }
     const mdx = mesh.position.x - prevX;
     const mdz = mesh.position.z - prevZ;
-    const spd = Math.hypot(mdx, mdz);
-    if (spd > 0.002 && phase !== "dock" && phase !== "queue" && phase !== "park") {
+    if (Math.hypot(mdx, mdz) > 0.0015 && moving) {
       const yaw = Math.atan2(mdx, mdz);
-      mesh.rotation.y += (yaw - mesh.rotation.y) * Math.min(1, dt * 3.2);
+      mesh.rotation.y += (yaw - mesh.rotation.y) * Math.min(1, dt * 2.4);
     } else {
-      mesh.rotation.y += (0 - mesh.rotation.y) * Math.min(1, dt * 2.4);
+      mesh.rotation.y += (0 - mesh.rotation.y) * Math.min(1, dt * 2.0);
     }
-    mesh.position.y = Math.sin(performance.now() * 0.002 + row.id) * 0.05;
+    // freeze bob while alongside so MLA tip can stay seated on the nozzle
+    mesh.position.y = phase === "dock"
+      ? 0
+      : Math.sin(performance.now() * 0.002 + row.id) * 0.05;
 
     const nav = vesselNav.get(row.id);
     let op = 0;
@@ -2476,52 +2761,119 @@ function animateScene(dt) {
     const jobs = activePlan()?.jobs.filter((j) => j.berth === b.id) || [];
     const active = jobs.find((j) => state.t >= j.start && state.t < j.end);
     const co = jobs.find((j) => j.co > 0 && state.t >= j.start - j.co && state.t < j.start);
-    // MLA follows visual voyage (dock / early depart) — not the racing sim clock
+    // MLA reaches once vessel is visually docked; latches to ship nozzle with a click
     let armU = 0;
     const connectJob = jobs.find((j) => {
       const n = vesselNav.get(j.id);
-      return n && (n.stage === "dock" || (n.stage === "depart" && n.u < 0.35));
+      return n && (n.stage === "dock" || (n.stage === "depart" && n.u < 0.28));
     });
     if (connectJob) {
       const n = vesselNav.get(connectJob.id);
       if (n.stage === "dock") {
-        armU = Math.min(1, n.dockT / 0.7);
+        // ~1.35 s reach + latch (readable at 2×)
+        armU = Math.min(1, n.dockT / 1.35);
       } else {
-        armU = 1 - Math.min(1, n.u / 0.35);
+        armU = 1 - Math.min(1, n.u / 0.28);
       }
     }
-    // pump pulse on coupler while flowing
-    if (active && armU > 0.95) {
-      const pulse = 1 + Math.sin(state.t * 10) * 0.04;
-      const coupler = g.getObjectByName("coupler");
-      if (coupler) coupler.scale.set(pulse, pulse, pulse);
-    } else {
-      const coupler = g.getObjectByName("coupler");
-      if (coupler) coupler.scale.set(1, 1, 1);
-    }
-    // aim QCDC at vessel midship flange (berth-local coords)
-    let targetLocal = null;
+
+    let targetWorld = null;
+    let vMesh = null;
     if (connectJob && armU > 0) {
-      const vMesh = vesselMeshes.get(connectJob.id);
+      vMesh = vesselMeshes.get(connectJob.id);
       if (vMesh) {
-        const flange = vMesh.getObjectByName("manFlange") || vMesh.getObjectByName("manifold");
-        const wp = new THREE.Vector3();
-        if (flange) flange.getWorldPosition(wp);
-        else wp.set(vMesh.position.x, 1.35, vMesh.position.z - 0.7);
-        targetLocal = g.worldToLocal(wp.clone());
-      } else {
-        targetLocal = new THREE.Vector3(0, 1.35, (b.dockZ ?? TERMINAL.dockZ) - g.position.z - 0.7);
+        // pose vessel first (already done above) so nozzle world pos is current
+        const nozzle = vMesh.getObjectByName("manFace")
+          || vMesh.getObjectByName("manFlange")
+          || vMesh.getObjectByName("manifold");
+        targetWorld = new THREE.Vector3();
+        if (nozzle) nozzle.getWorldPosition(targetWorld);
+        else targetWorld.set(vMesh.position.x, 1.35, vMesh.position.z - 0.85);
       }
     }
+
+    const wasLocked = !!g.userData.qcdcLocked;
+    let poseInfo = { gap: Infinity, locked: false };
     try {
-      setBerthArmPose(g, armU, targetLocal);
+      poseInfo = setBerthArmPose(g, armU, targetWorld, {
+        locked: false,
+        flash: g.userData.clickFlash || 0,
+      }) || poseInfo;
     } catch (_) { /* keep prior pose */ }
+
+    // lock only when tip is actually seated on the nozzle (gap), not by timer alone
+    const locked = !!(connectJob && armU >= 0.88 && poseInfo.gap < 0.1);
+    if (locked && !wasLocked) {
+      playConnectClick();
+      g.userData.clickFlash = 1;
+      // hard seat once more after click
+      if (targetWorld) {
+        snapStyleRootToNozzle(g, targetWorld, 1);
+        refineTipToTarget(g, targetWorld, 6, 0.8);
+        snapStyleRootToNozzle(g, targetWorld, 1);
+      }
+    }
+    if (!connectJob || armU < 0.4) {
+      g.userData.qcdcLocked = false;
+      const sr = g.getObjectByName("styleRoot");
+      if (sr && armU < 0.05) sr.position.set(0, 0, 0);
+    } else {
+      g.userData.qcdcLocked = locked;
+    }
+    if (g.userData.clickFlash > 0) g.userData.clickFlash = Math.max(0, g.userData.clickFlash - dt * 2.8);
+
+    // while locked, keep tip seated on the nozzle every frame
+    if (g.userData.qcdcLocked && targetWorld) {
+      setBerthArmPose(g, 1, targetWorld, {
+        locked: true,
+        trackOnly: true,
+        flash: g.userData.clickFlash || 0,
+      });
+    }
+
+    if (vMesh) {
+      const manFace = vMesh.getObjectByName("manFace");
+      const manRing = vMesh.getObjectByName("manRing");
+      if (manFace?.material) {
+        if (manFace.material.emissive) {
+          manFace.material.emissive.set(locked ? 0x22c55e : armU > 0.7 ? 0xf59e0b : 0x000000);
+          manFace.material.emissiveIntensity = locked
+            ? 0.55 + (g.userData.clickFlash || 0) * 1.2
+            : armU > 0.7 ? 0.25 : 0;
+        }
+        manFace.material.color?.set?.(locked ? 0x4ade80 : 0x334155);
+      }
+      if (manRing?.material) {
+        manRing.material.color.set(locked ? 0x22c55e : 0xf59e0b);
+        manRing.scale.setScalar(locked ? 1.08 + (g.userData.clickFlash || 0) * 0.2 : 1);
+      }
+    }
+
+    const coupler = g.getObjectByName("coupler");
+    if (coupler) {
+      if (g.userData.qcdcLocked && active) {
+        const pulse = 1 + Math.sin(state.t * 10) * 0.035;
+        coupler.scale.set(pulse, pulse, pulse);
+      } else if (g.userData.clickFlash > 0.2) {
+        const punch = 1 + g.userData.clickFlash * 0.25;
+        coupler.scale.set(punch, punch, punch);
+      } else {
+        coupler.scale.set(1, 1, 1);
+      }
+    }
+
     if (ring?.material) {
-      const col = active ? 0x2563eb : co ? 0xdc2626 : armU > 0.5 ? 0xf59e0b : 0x22c55e;
+      const col = g.userData.qcdcLocked ? 0x22c55e
+        : active ? 0x2563eb
+        : co ? 0xdc2626
+        : armU > 0.5 ? 0xf59e0b
+        : 0x22c55e;
       ring.material.color.set(col);
       if (ring.material.emissive) {
         ring.material.emissive.set(col);
-        ring.material.emissiveIntensity = active ? 0.55 : 0.35;
+        ring.material.emissiveIntensity = g.userData.qcdcLocked
+          ? 0.7 + (g.userData.clickFlash || 0)
+          : active ? 0.55 : 0.35;
       }
     }
   }
