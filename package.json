@@ -1,0 +1,11 @@
+{
+  "name": "liquidtwin-terminal",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Liquid bulk jetty terminal digital twin with berth/channel/tug/line/inventory-constrained schedule optimization",
+  "scripts": {
+    "serve": "python3 -m http.server 8790",
+    "test": "node tests/model.test.js"
+  }
+}
