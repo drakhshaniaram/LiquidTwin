@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liquidtwin-api"
+version = "0.1.0"
+description = "LiquidTwin terminal design and routing API"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13",
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "liquidtwin-engine>=0.1.0",
+    "psycopg[binary]>=3.1",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+dev = ["datamodel-code-generator>=0.83,<0.84", "mypy", "pytest>=8", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+explicit_package_bases = true
+warn_unused_configs = true
+check_untyped_defs = true
+no_implicit_optional = true
+exclude = ["src/liquidtwin_api/schemas/terminal_document.py"]
+
+[[tool.mypy.overrides]]
+module = ["liquidtwin_engine.validation"]
+ignore_missing_imports = true

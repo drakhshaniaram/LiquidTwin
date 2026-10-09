@@ -1,0 +1,445 @@
+{
+  "schema_version": "1.0",
+  "name": "Reference sample terminal",
+  "products": [
+    {
+      "id": "1",
+      "name": "Product 1",
+      "friction_factor": 0.018,
+      "max_velocity": 3.0,
+      "color": "#E4572E"
+    },
+    {
+      "id": "2",
+      "name": "Product 2",
+      "friction_factor": 0.015,
+      "max_velocity": 3.0,
+      "color": "#2E86AB"
+    }
+  ],
+  "changeover": [
+    {
+      "from_product": "1",
+      "to_product": "1",
+      "gap_min": 0,
+      "flush_factor": 0,
+      "manual_clean_required": false
+    },
+    {
+      "from_product": "1",
+      "to_product": "2",
+      "gap_min": 45,
+      "flush_factor": 1.5,
+      "manual_clean_required": false
+    },
+    {
+      "from_product": "2",
+      "to_product": "1",
+      "gap_min": 45,
+      "flush_factor": 1.5,
+      "manual_clean_required": false
+    },
+    {
+      "from_product": "2",
+      "to_product": "2",
+      "gap_min": 0,
+      "flush_factor": 0,
+      "manual_clean_required": false
+    }
+  ],
+  "tank_groups": [
+    {
+      "id": "G1",
+      "name": "Tank farm",
+      "tank_ids": [
+        "7",
+        "8",
+        "9"
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "1",
+      "type": "JETTY",
+      "name": "Jetty1",
+      "x": 0,
+      "y": 100,
+      "max_rate_m3h": 2000,
+      "certified_products": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "id": "2",
+      "type": "JETTY",
+      "name": "Jetty2",
+      "x": 0,
+      "y": 200,
+      "max_rate_m3h": 2000,
+      "certified_products": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "id": "3",
+      "type": "JUNCTION",
+      "name": "J3",
+      "x": 150,
+      "y": 150
+    },
+    {
+      "id": "4",
+      "type": "JUNCTION",
+      "name": "J4",
+      "x": 350,
+      "y": 150
+    },
+    {
+      "id": "5",
+      "type": "JUNCTION",
+      "name": "J5",
+      "x": 500,
+      "y": 100
+    },
+    {
+      "id": "6",
+      "type": "JUNCTION",
+      "name": "J6",
+      "x": 500,
+      "y": 200
+    },
+    {
+      "id": "7",
+      "type": "TANK",
+      "name": "T7",
+      "x": 650,
+      "y": 60,
+      "group_id": "G1",
+      "product_id": "1",
+      "stock_m3": 2000,
+      "capacity_m3": 8000,
+      "allow_inbound": true,
+      "allow_outbound": true,
+      "allow_simultaneous": false
+    },
+    {
+      "id": "8",
+      "type": "TANK",
+      "name": "T8",
+      "x": 650,
+      "y": 150,
+      "group_id": "G1",
+      "product_id": "2",
+      "stock_m3": 1500,
+      "capacity_m3": 5000,
+      "allow_inbound": true,
+      "allow_outbound": true,
+      "allow_simultaneous": false
+    },
+    {
+      "id": "9",
+      "type": "TANK",
+      "name": "T9",
+      "x": 650,
+      "y": 240,
+      "group_id": "G1",
+      "product_id": null,
+      "stock_m3": 0,
+      "capacity_m3": 6000,
+      "allow_inbound": true,
+      "allow_outbound": true,
+      "allow_simultaneous": false
+    },
+    {
+      "id": "10",
+      "type": "LOADING_POINT",
+      "name": "Load1",
+      "x": 200,
+      "y": 400,
+      "max_rate_m3h": 2000,
+      "certified_products": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "id": "11",
+      "type": "LOADING_POINT",
+      "name": "Load2",
+      "x": 500,
+      "y": 400,
+      "max_rate_m3h": 2000,
+      "certified_products": [
+        "1",
+        "2"
+      ]
+    },
+    {
+      "id": "12",
+      "type": "JUNCTION",
+      "name": "J12",
+      "x": 250,
+      "y": 150
+    },
+    {
+      "id": "13",
+      "type": "JUNCTION",
+      "name": "J13",
+      "x": 350,
+      "y": 320
+    }
+  ],
+  "elements": [
+    {
+      "id": "1",
+      "type": "LINE",
+      "from": "1",
+      "to": "3",
+      "length_m": 400,
+      "diameter_mm": 400,
+      "elevation_delta_m": 2,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "1",
+      "bidirectional": true
+    },
+    {
+      "id": "2",
+      "type": "LINE",
+      "from": "2",
+      "to": "3",
+      "length_m": 350,
+      "diameter_mm": 400,
+      "elevation_delta_m": 2,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "2",
+      "bidirectional": true
+    },
+    {
+      "id": "3",
+      "type": "PUMP",
+      "from": "3",
+      "to": "12",
+      "length_m": 20,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": null,
+      "bidirectional": false,
+      "head_m": 60
+    },
+    {
+      "id": "4",
+      "type": "COMMON_HEADER",
+      "from": "12",
+      "to": "4",
+      "length_m": 900,
+      "diameter_mm": 400,
+      "elevation_delta_m": 6,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": null,
+      "bidirectional": true
+    },
+    {
+      "id": "5",
+      "type": "COMMON_HEADER",
+      "from": "3",
+      "to": "4",
+      "length_m": 1100,
+      "diameter_mm": 300,
+      "elevation_delta_m": -4,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": null,
+      "bidirectional": true
+    },
+    {
+      "id": "6",
+      "type": "TANK_HEADER",
+      "from": "4",
+      "to": "5",
+      "length_m": 300,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "1",
+      "bidirectional": true,
+      "tank_id": "7"
+    },
+    {
+      "id": "7",
+      "type": "TANK_HEADER",
+      "from": "4",
+      "to": "6",
+      "length_m": 350,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "2",
+      "bidirectional": true,
+      "tank_id": "9"
+    },
+    {
+      "id": "8",
+      "type": "SEGMENT",
+      "from": "5",
+      "to": "7",
+      "length_m": 80,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "1",
+      "bidirectional": true,
+      "tank_id": "7"
+    },
+    {
+      "id": "9",
+      "type": "SEGMENT",
+      "from": "5",
+      "to": "8",
+      "length_m": 120,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "2",
+      "bidirectional": true,
+      "tank_id": "8"
+    },
+    {
+      "id": "10",
+      "type": "SEGMENT",
+      "from": "6",
+      "to": "8",
+      "length_m": 100,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": "2",
+      "bidirectional": true,
+      "tank_id": "8"
+    },
+    {
+      "id": "11",
+      "type": "SEGMENT",
+      "from": "6",
+      "to": "9",
+      "length_m": 90,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": null,
+      "bidirectional": true,
+      "tank_id": "9"
+    },
+    {
+      "id": "12",
+      "type": "PUMP",
+      "from": "4",
+      "to": "13",
+      "length_m": 20,
+      "diameter_mm": 250,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": null,
+      "bidirectional": false,
+      "head_m": 50
+    },
+    {
+      "id": "13",
+      "type": "LINE",
+      "from": "13",
+      "to": "10",
+      "length_m": 500,
+      "diameter_mm": 250,
+      "elevation_delta_m": 3,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1"
+      ],
+      "residue_product_id": "1",
+      "bidirectional": true
+    },
+    {
+      "id": "14",
+      "type": "LINE",
+      "from": "13",
+      "to": "11",
+      "length_m": 650,
+      "diameter_mm": 250,
+      "elevation_delta_m": 3,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "2"
+      ],
+      "residue_product_id": "2",
+      "bidirectional": true
+    },
+    {
+      "id": "15",
+      "type": "VALVE",
+      "from": "5",
+      "to": "6",
+      "length_m": 0,
+      "diameter_mm": 400,
+      "elevation_delta_m": 0,
+      "installation": "ABOVEGROUND",
+      "certified_products": [
+        "1",
+        "2"
+      ],
+      "residue_product_id": null,
+      "bidirectional": true,
+      "operate_min": 3,
+      "state": "OPEN"
+    }
+  ]
+}

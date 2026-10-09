@@ -1,0 +1,4 @@
+node_id,group_id,product_id,stock_m3,capacity_m3,min_heel_m3,allow_inbound,allow_outbound,allow_simultaneous
+7,G1,1,2000,8000,,true,true,false
+8,G1,2,1500,5000,,true,true,false
+9,G1,,0,6000,,true,true,false

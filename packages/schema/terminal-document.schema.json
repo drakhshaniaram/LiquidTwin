@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "terminal-document.schema.json",
+  "title": "TerminalDocument",
+  "type": "object",
+  "required": ["schema_version", "name", "products", "nodes", "elements"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "products": { "type": "array", "items": { "$ref": "#/$defs/Product" } },
+    "changeover": { "type": "array", "items": { "$ref": "#/$defs/ChangeoverRule" } },
+    "tank_groups": { "type": "array", "items": { "$ref": "#/$defs/TankGroup" } },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/Node" } },
+    "elements": { "type": "array", "items": { "$ref": "#/$defs/Element" } },
+    "layout": {
+      "type": "object",
+      "description": "Optional editor-only data; ignored by engines",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "Id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+    "Product": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "name": { "type": "string" },
+        "group": { "type": "string" },
+        "friction_factor": { "type": "number", "minimum": 0.005, "maximum": 0.1, "default": 0.018 },
+        "max_velocity": { "type": "number", "exclusiveMinimum": 0, "default": 3.0 },
+        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+      }
+    },
+    "ChangeoverRule": {
+      "type": "object",
+      "required": ["from_product", "to_product"],
+      "additionalProperties": false,
+      "properties": {
+        "from_product": { "$ref": "#/$defs/Id" },
+        "to_product": { "$ref": "#/$defs/Id" },
+        "gap_min": { "type": "number", "minimum": 0, "default": 0 },
+        "flush_factor": { "type": "number", "minimum": 0, "default": 0 },
+        "manual_clean_required": { "type": "boolean", "default": false }
+      }
+    },
+    "TankGroup": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "name": { "type": "string" },
+        "tank_ids": { "type": "array", "items": { "$ref": "#/$defs/Id" } }
+      }
+    },
+    "Node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "type": { "enum": ["TANK", "JETTY", "LOADING_POINT", "RAIL_PLATFORM", "RAIL_CAR", "MANIFOLD", "JUNCTION"] },
+        "name": { "type": "string" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "group_id": { "$ref": "#/$defs/Id" },
+        "product_id": { "oneOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }] },
+        "stock_m3": { "type": "number", "minimum": 0 },
+        "capacity_m3": { "type": "number", "exclusiveMinimum": 0 },
+        "min_heel_m3": { "type": "number", "minimum": 0 },
+        "allow_inbound": { "type": "boolean", "default": true },
+        "allow_outbound": { "type": "boolean", "default": true },
+        "allow_simultaneous": { "type": "boolean", "default": false },
+        "max_rate_m3h": { "type": "number", "exclusiveMinimum": 0 },
+        "certified_products": { "type": "array", "items": { "$ref": "#/$defs/Id" } },
+        "side_count": { "type": "integer", "minimum": 1 },
+        "cars_per_side": { "type": "integer", "minimum": 1 },
+        "platform_id": { "$ref": "#/$defs/Id" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "TANK" } } },
+          "then": { "required": ["capacity_m3"] }
+        }
+      ]
+    },
+    "Element": {
+      "type": "object",
+      "required": ["id", "type", "from", "to"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "type": { "enum": ["TANK_HEADER", "SEGMENT", "COMMON_HEADER", "LINE", "PUMP", "VALVE"] },
+        "from": { "$ref": "#/$defs/Id" },
+        "to": { "$ref": "#/$defs/Id" },
+        "length_m": { "type": "number", "minimum": 0 },
+        "diameter_mm": { "type": "number", "exclusiveMinimum": 0 },
+        "elevation_delta_m": { "type": "number", "default": 0 },
+        "installation": { "enum": ["UNDERGROUND", "ABOVEGROUND"], "default": "ABOVEGROUND" },
+        "roughness_mm": { "type": "number", "minimum": 0 },
+        "certified_products": { "type": "array", "items": { "$ref": "#/$defs/Id" } },
+        "dedicated_group_id": { "$ref": "#/$defs/Id" },
+        "dedicated_product_ids": { "type": "array", "items": { "$ref": "#/$defs/Id" } },
+        "residue_product_id": { "oneOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }] },
+        "bidirectional": { "type": "boolean", "default": true },
+        "tank_id": { "$ref": "#/$defs/Id" },
+        "head_m": { "type": "number", "minimum": 0 },
+        "max_flow_m3h": { "type": "number", "exclusiveMinimum": 0 },
+        "operate_min": { "type": "number", "minimum": 0 },
+        "state": { "enum": ["OPEN", "CLOSED"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "enum": ["TANK_HEADER", "SEGMENT"] } } },
+          "then": { "required": ["tank_id", "length_m", "diameter_mm"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "PUMP" } } },
+          "then": { "required": ["head_m"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["COMMON_HEADER", "LINE"] } } },
+          "then": { "required": ["length_m", "diameter_mm"] }
+        }
+      ]
+    }
+  }
+}

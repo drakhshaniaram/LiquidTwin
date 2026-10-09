@@ -1,0 +1,443 @@
+openapi: 3.1.0
+info:
+  title: LiquidTwin API (feature 001)
+  version: 0.1.0
+  description: Terminal management, validation, availability and quickest-route queries. No authentication in this feature.
+servers:
+  - url: /api/v1
+paths:
+  /terminals:
+    get:
+      summary: List terminals
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TerminalSummary' }
+    post:
+      summary: Create a terminal (first version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTerminal' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalSummary' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /terminals/{terminalId}:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    get:
+      summary: Get latest (or ?version=N) document
+      parameters:
+        - { name: version, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalVersionDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      summary: Delete a terminal and its versions
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /terminals/{terminalId}/versions:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    get:
+      summary: List versions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VersionInfo' }
+    post:
+      summary: Save a new version (append-only). Use restore_from to copy an older version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaveVersion' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VersionInfo' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /terminals/import:
+    post:
+      summary: Import a terminal from JSON or a CSV bundle (all-or-nothing)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportJson' }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name, files]
+              properties:
+                name: { type: string }
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+                  description: nodes.csv, elements.csv, tanks.csv, products.csv, changeover.csv (see csv-import.md)
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalSummary' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /terminals/{terminalId}/export:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    get:
+      summary: Export latest version
+      parameters:
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }
+      responses:
+        '200':
+          description: JSON document or zip of CSV files
+  /terminals/{terminalId}/validate:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    post:
+      summary: Validate a document (supplied or latest) without saving
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                document: { $ref: 'terminal-document.schema.json' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [issues]
+                properties:
+                  issues:
+                    type: array
+                    items: { $ref: '#/components/schemas/ValidationIssue' }
+  /terminals/{terminalId}/routes:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    post:
+      summary: Quickest feasible routes for one operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RouteRequest' }
+      responses:
+        '200':
+          description: Routes (possibly empty) with explanations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /terminals/{terminalId}/routes/confirm:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    post:
+      summary: Confirm the final route chosen from the shortlist (FR-023)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request, route]
+              properties:
+                request: { $ref: '#/components/schemas/RouteRequest' }
+                route: { $ref: '#/components/schemas/Route' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfirmedRoute' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+  /terminals/{terminalId}/routes/confirmed:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    get:
+      summary: List confirmed routes (outdated ones flagged)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConfirmedRoute' }
+  /terminals/{terminalId}/availability:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    get:
+      summary: List availability windows
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: element_id, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AvailabilityWindow' }
+    post:
+      summary: Upsert availability windows (idempotent by element_id+source+external_ref). Unknown elements are reported, not fatal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [windows]
+              properties:
+                windows:
+                  type: array
+                  maxItems: 5000
+                  items: { $ref: '#/components/schemas/AvailabilityWindowInput' }
+      responses:
+        '200':
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applied, rejected]
+                properties:
+                  applied: { type: integer }
+                  rejected:
+                    type: array
+                    items:
+                      type: object
+                      required: [index, reason]
+                      properties:
+                        index: { type: integer }
+                        reason: { type: string }
+  /terminals/{terminalId}/availability/{windowId}:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+      - { name: windowId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      summary: Delete a window
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  parameters:
+    TerminalId:
+      name: terminalId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationFailed:
+      description: Input rejected; nothing was saved
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [issues]
+            properties:
+              issues:
+                type: array
+                items: { $ref: '#/components/schemas/ValidationIssue' }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+    TerminalSummary:
+      type: object
+      required: [id, name, current_version, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        current_version: { type: integer }
+        updated_at: { type: string, format: date-time }
+    CreateTerminal:
+      type: object
+      required: [name, document]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        document: { $ref: 'terminal-document.schema.json' }
+    ImportJson:
+      type: object
+      required: [name, document]
+      properties:
+        name: { type: string }
+        document: { $ref: 'terminal-document.schema.json' }
+    SaveVersion:
+      type: object
+      properties:
+        document: { $ref: 'terminal-document.schema.json' }
+        restore_from: { type: integer, minimum: 1 }
+        note: { type: string, maxLength: 500 }
+      description: Exactly one of document or restore_from is required.
+    VersionInfo:
+      type: object
+      required: [version, created_at]
+      properties:
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        note: { type: string }
+    TerminalVersionDetail:
+      type: object
+      required: [id, name, version, document]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer }
+        document: { $ref: 'terminal-document.schema.json' }
+    ValidationIssue:
+      type: object
+      required: [severity, code, message]
+      properties:
+        severity: { type: string, enum: [ERROR, WARNING] }
+        code: { type: string }
+        element_id: { type: string }
+        node_id: { type: string }
+        row: { type: integer, description: CSV row for import errors }
+        file: { type: string }
+        message: { type: string }
+        fix_hint: { type: string }
+    AvailabilityWindowInput:
+      type: object
+      required: [element_id, status, from]
+      properties:
+        element_id: { type: string }
+        status: { $ref: '#/components/schemas/AvailabilityStatus' }
+        from: { type: string, format: date-time }
+        to: { type: [string, 'null'], format: date-time }
+        reason: { type: string }
+        source: { type: string, default: manual }
+        external_ref: { type: string }
+    AvailabilityWindow:
+      allOf:
+        - { $ref: '#/components/schemas/AvailabilityWindowInput' }
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    AvailabilityStatus:
+      type: string
+      enum: [AVAILABLE, MAINTENANCE, FLUSHING, CLEANING, OUT_OF_SERVICE]
+    RouteRequest:
+      type: object
+      required: [direction, product_id, volume_m3, rate_m3h, window_from, source_ids, destination_ids]
+      properties:
+        version: { type: integer, minimum: 1, description: Defaults to latest }
+        direction: { type: string, enum: [IN, OUT, TRANSFER] }
+        product_id: { type: string }
+        volume_m3: { type: number, exclusiveMinimum: 0 }
+        rate_m3h: { type: number, exclusiveMinimum: 0 }
+        window_from: { type: string, format: date-time }
+        window_to: { type: string, format: date-time, description: Defaults to window_from plus transfer time }
+        source_ids: { type: array, minItems: 1, items: { type: string } }
+        destination_ids: { type: array, minItems: 1, items: { type: string } }
+        max_routes: { type: integer, minimum: 1, maximum: 20, default: 5 }
+    RouteResponse:
+      type: object
+      required: [terminal_version, engine_version, routes, exclusions]
+      properties:
+        terminal_version: { type: integer }
+        engine_version: { type: string }
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/Route' }
+        exclusions:
+          type: array
+          items: { $ref: '#/components/schemas/Exclusion' }
+        no_route:
+          $ref: '#/components/schemas/NoRoute'
+    Route:
+      type: object
+      required: [rank, source_id, destination_id, steps, metrics]
+      properties:
+        rank: { type: integer }
+        source_id: { type: string }
+        destination_id: { type: string }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [element_id, from, to, reversed]
+            properties:
+              element_id: { type: string }
+              from: { type: string }
+              to: { type: string }
+              reversed: { type: boolean }
+        metrics:
+          type: object
+          required: [fill_min, transfer_min, flush_min, flush_volume_m3, total_min, valves, common_headers, head_margin_m, max_velocity_ms]
+          properties:
+            fill_min: { type: number }
+            transfer_min: { type: number }
+            flush_min: { type: number }
+            flush_volume_m3: { type: number }
+            total_min: { type: number }
+            valves: { type: integer }
+            common_headers: { type: integer }
+            head_margin_m: { type: number }
+            max_velocity_ms: { type: number }
+    Exclusion:
+      type: object
+      required: [reason, detail]
+      properties:
+        element_id: { type: string }
+        node_id: { type: string }
+        reason:
+          type: string
+          enum: [NOT_CERTIFIED, VELOCITY, RESIDUE, ONE_WAY_PUMP, UNAVAILABLE, DEDICATED_OTHER_GROUP, PUMP_HEAD, ENDPOINT_STOCK, ENDPOINT_SPACE, ENDPOINT_PRODUCT, ENDPOINT_DIRECTION]
+        detail: { type: string }
+    ConfirmedRoute:
+      type: object
+      required: [id, terminal_version, request, route, outdated, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        terminal_version: { type: integer }
+        request: { $ref: '#/components/schemas/RouteRequest' }
+        route: { $ref: '#/components/schemas/Route' }
+        outdated: { type: boolean }
+        outdated_reason: { type: string }
+        created_at: { type: string, format: date-time }
+    NoRoute:
+      type: object
+      required: [message, blockers]
+      properties:
+        message: { type: string }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/Exclusion' }

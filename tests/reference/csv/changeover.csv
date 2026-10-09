@@ -1,0 +1,5 @@
+from_product,to_product,gap_min,flush_factor,manual_clean_required
+1,1,0,0,false
+1,2,45,1.5,false
+2,1,45,1.5,false
+2,2,0,0,false

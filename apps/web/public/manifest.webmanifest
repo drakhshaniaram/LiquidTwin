@@ -1,0 +1,16 @@
+{
+  "name": "LiquidTwin Terminal Workspace",
+  "short_name": "LiquidTwin",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1f4f0",
+  "theme_color": "#17322e",
+  "icons": [
+    {
+      "src": "/flow-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

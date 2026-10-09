@@ -1,0 +1,14 @@
+{
+  "name": "@liquidtwin/schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "bash ./codegen.sh",
+    "schema:check": "bash ./codegen.sh --check"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4",
+    "prettier": "^3.0.0"
+  }
+}
