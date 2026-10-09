@@ -40,7 +40,7 @@ def _arc_reason(t: Terminal, el: Element, arc: Arc, m: ArcMetrics, product, unav
         return Exclusion(R.NOT_CERTIFIED, f"{el.id} is not certified for product {pid}", el.id)
     if el.dedicated_product_ids and pid not in el.dedicated_product_ids:
         return Exclusion(R.DEDICATED_OTHER_GROUP, f"{el.id} is dedicated to other products", el.id)
-    if arc.reversed and el.head_m > 0 and el.type == "PUMP":
+    if arc.reversed and el.type == "PUMP":
         return Exclusion(R.ONE_WAY_PUMP, f"{el.id} is a pump and cannot be traversed in reverse", el.id)
     if m.velocity > product.max_velocity:
         return Exclusion(R.VELOCITY, f"{el.id} velocity {m.velocity:.2f} m/s exceeds {product.max_velocity} m/s", el.id)

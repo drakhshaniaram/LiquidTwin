@@ -136,6 +136,33 @@ paths:
                   issues:
                     type: array
                     items: { $ref: '#/components/schemas/ValidationIssue' }
+  /terminals/{terminalId}/graph:
+    parameters:
+      - { $ref: '#/components/parameters/TerminalId' }
+    get:
+      summary: Return the validated directed graph for a terminal version
+      parameters:
+        - { name: version, in: query, schema: { type: integer, minimum: 1 }, description: Defaults to latest }
+      responses:
+        '200':
+          description: Terminal nodes, elements, and derived directed arcs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TerminalGraph' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Semantic validation errors prevent an accurate graph projection
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message, issues]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  issues:
+                    type: array
+                    items: { $ref: '#/components/schemas/ValidationIssue' }
   /terminals/{terminalId}/routes:
     parameters:
       - { $ref: '#/components/parameters/TerminalId' }
@@ -321,6 +348,33 @@ components:
         name: { type: string }
         version: { type: integer }
         document: { $ref: 'terminal-document.schema.json' }
+    TerminalGraph:
+      type: object
+      required: [terminal_version, nodes, elements, arcs, issues]
+      properties:
+        terminal_version: { type: integer, minimum: 1 }
+        nodes:
+          type: array
+          items: { type: object, additionalProperties: true }
+        elements:
+          type: array
+          items: { type: object, additionalProperties: true }
+        arcs:
+          type: array
+          items:
+            type: object
+            required: [id, element_id, from, to, reversed, traversable]
+            properties:
+              id: { type: string }
+              element_id: { type: string }
+              from: { type: string }
+              to: { type: string }
+              reversed: { type: boolean }
+              traversable: { type: boolean }
+              restriction: { type: [string, 'null'], enum: [ONE_WAY_PUMP, null] }
+        issues:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationIssue' }
     ValidationIssue:
       type: object
       required: [severity, code, message]

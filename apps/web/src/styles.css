@@ -662,6 +662,41 @@ input:focus-visible {
   border-right: 1px solid var(--rule);
 }
 
+.view-mode-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid #c8d2cb;
+  border-radius: 4px;
+  background: #e4eae5;
+}
+
+.view-mode-switch button {
+  display: inline-flex;
+  min-height: 27px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 2px;
+  color: #52675e;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.view-mode-switch button.is-active {
+  color: #fff;
+  background: #31564d;
+}
+
+.view-mode-switch button:focus-visible {
+  outline: 2px solid #bd7e20;
+  outline-offset: 1px;
+}
+
 .design-actions button {
   display: grid;
   width: 34px;
@@ -824,6 +859,73 @@ input:focus-visible {
 
 .terminal-canvas:active {
   cursor: grabbing;
+}
+
+.graph-edge path {
+  fill: none;
+  stroke-width: 4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-edge-label {
+  fill: #405a50;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  paint-order: stroke;
+  stroke: #f9fbf8;
+  stroke-width: 4px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.graph-restriction circle {
+  fill: #fff7f2;
+  stroke: #b5412a;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-restriction path {
+  fill: none;
+  stroke: #b5412a;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.graph-readout {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  display: flex;
+  max-width: min(560px, calc(100% - 166px));
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 10px;
+  padding: 7px 9px;
+  border: 1px solid #cbd5ce;
+  border-left: 3px solid #31564d;
+  border-radius: 3px;
+  color: #40584f;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 2px 8px rgb(23 50 46 / 10%);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+}
+
+.graph-readout strong {
+  color: #24483e;
+}
+
+.graph-readout-warning,
+.graph-readout-error {
+  color: #a74428;
+}
+
+.graph-readout-legend {
+  flex-basis: 100%;
+  color: #64766d;
 }
 
 .terminal-editor {

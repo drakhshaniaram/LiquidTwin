@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from liquidtwin_api.routes.terminals import router as terminals_router
+from liquidtwin_api.routes.graph import router as graph_router
 from liquidtwin_api.routes.validate import router as validation_router
 
 
@@ -45,6 +46,7 @@ def current_actor() -> str:
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(terminals_router)
+api_router.include_router(graph_router)
 api_router.include_router(validation_router)
 app = FastAPI(title="LiquidTwin API", version="0.1.0")
 app.include_router(api_router)

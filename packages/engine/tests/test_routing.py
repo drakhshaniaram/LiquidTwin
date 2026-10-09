@@ -50,6 +50,13 @@ def test_one_way_pump_reverse_is_excluded(sample):
     assert all("3" not in r.element_ids or not r.steps[r.element_ids.index("3")].reversed for r in res.routes)
 
 
+def test_zero_head_pump_is_still_one_way(sample):
+    next(e for e in sample["elements"] if e["id"] == "3")["head_m"] = 0
+    res = run(sample, req(source_ids=("4",), destination_ids=("1",)))
+    assert ("3", R.ONE_WAY_PUMP) in reasons(res)
+    assert all("3" not in r.element_ids or not r.steps[r.element_ids.index("3")].reversed for r in res.routes)
+
+
 def test_dedication_to_other_group(sample):
     next(e for e in sample["elements"] if e["id"] == "8")["dedicated_group_id"] = "G2"
     res = run(sample, req(destination_ids=("7",)))

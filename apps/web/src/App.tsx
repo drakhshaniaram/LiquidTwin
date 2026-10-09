@@ -37,10 +37,12 @@ import {
 
 import {
   createTerminal,
+  getTerminalGraph,
   getTerminal,
   listTerminals,
   saveTerminalDocument,
   validateTerminalDocument,
+  type TerminalGraph,
   type ValidationIssue,
 } from './api/terminals';
 import type {
@@ -519,6 +521,124 @@ function EquipmentGlyph({ type, color }: { type: TerminalNode['type']; color: st
   }
 }
 
+function TerminalGraphLayers({
+  graph,
+  zoom,
+  labelScale,
+}: {
+  graph: TerminalGraph;
+  zoom: number;
+  labelScale: number;
+}) {
+  const positions = graph.nodes.map((node, index) => ({
+    node,
+    x: typeof node.x === 'number' ? node.x : 100 + (index % 6) * 170,
+    y: typeof node.y === 'number' ? node.y : 100 + Math.floor(index / 6) * 135,
+  }));
+  const positionById = new Map(positions.map(({ node, x, y }) => [node.id, { x, y }]));
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const arcsByElement = new Map<string, TerminalGraph['arcs']>();
+  for (const arc of graph.arcs) {
+    const arcs = arcsByElement.get(arc.element_id) ?? [];
+    arcs.push(arc);
+    arcsByElement.set(arc.element_id, arcs);
+  }
+  const parallelGroups = new Map<string, TerminalElement[]>();
+  for (const element of graph.elements) {
+    const endpoints = [element.from, element.to].sort();
+    const key = `${endpoints[0]}|${endpoints[1]}`;
+    const group = parallelGroups.get(key) ?? [];
+    group.push(element);
+    parallelGroups.set(key, group);
+  }
+  const parallelOffsets = new Map<string, number>();
+  for (const group of parallelGroups.values()) {
+    [...group]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .forEach((element, index) => {
+        parallelOffsets.set(element.id, (index - (group.length - 1) / 2) * 36);
+      });
+  }
+
+  return (
+    <g className="terminal-graph-layers">
+      <defs>
+        <marker
+          id="graph-arrow"
+          markerHeight="8"
+          markerWidth="8"
+          markerUnits="userSpaceOnUse"
+          orient="auto-start-reverse"
+          refX="7"
+          refY="4"
+          viewBox="0 0 8 8"
+        >
+          <path d="M0 0L8 4L0 8Z" fill="#31564d" />
+        </marker>
+      </defs>
+      {graph.elements.map((element) => {
+        const fromCenter = positionById.get(element.from);
+        const toCenter = positionById.get(element.to);
+        const fromNode = nodeById.get(element.from);
+        const toNode = nodeById.get(element.to);
+        if (!fromCenter || !toCenter || !fromNode || !toNode) return null;
+        const from = nearestPort(fromNode, fromCenter, toCenter);
+        const to = nearestPort(toNode, toCenter, fromCenter);
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const length = Math.hypot(dx, dy) || 1;
+        const offset = parallelOffsets.get(element.id) ?? 0;
+        const middleX = (from.x + to.x) / 2 - (dy / length) * offset;
+        const middleY = (from.y + to.y) / 2 + (dx / length) * offset;
+        const edgeArcs = arcsByElement.get(element.id) ?? [];
+        const forward = edgeArcs.find((arc) => !arc.reversed);
+        const reverse = edgeArcs.find((arc) => arc.reversed);
+        if (!forward) return null;
+        const color =
+          element.type === 'PUMP' ? '#bd7e20' : element.type === 'VALVE' ? '#46766c' : '#52796f';
+        return (
+          <g className="graph-edge" key={element.id}>
+            <path
+              d={`M ${from.x} ${from.y} Q ${middleX} ${middleY} ${to.x} ${to.y}`}
+              markerEnd={forward.traversable ? 'url(#graph-arrow)' : undefined}
+              markerStart={reverse?.traversable ? 'url(#graph-arrow)' : undefined}
+              stroke={color}
+            />
+            {zoom >= 0.55 && (
+              <text
+                className="graph-edge-label"
+                x={middleX}
+                y={middleY - 8}
+                style={{ fontSize: 9 * labelScale }}
+              >
+                <title>
+                  {element.type}: {element.id}
+                </title>
+                {element.id.replace(/^element-/, '').slice(0, 5)}
+              </text>
+            )}
+            {reverse && !reverse.traversable && (
+              <g className="graph-restriction" transform={`translate(${middleX} ${middleY})`}>
+                <title>Reverse flow blocked by one-way pump</title>
+                <circle r="10" />
+                <path d="M-4 -4L4 4M4 -4L-4 4" />
+              </g>
+            )}
+          </g>
+        );
+      })}
+      {positions.map(({ node, x, y }) => (
+        <g className="graph-node" key={node.id} transform={`translate(${x}, ${y})`}>
+          <EquipmentGlyph type={node.type} color="#c3d8ce" />
+          <text className="node-name" x="0" y="51" style={{ fontSize: 13 * labelScale }}>
+            {node.name ?? node.id}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
 function initialSceneView(document: TerminalDocument): { x: number; y: number; zoom: number } {
   if (document.nodes.length === 0) return { x: 0, y: 0, zoom: 1 };
   const positions = document.nodes.map((node, index) => ({
@@ -535,6 +655,44 @@ function initialSceneView(document: TerminalDocument): { x: number; y: number; z
   return {
     x: (minX + maxX - 1100 / zoom) / 2,
     y: (minY + maxY - 620 / zoom) / 2,
+    zoom,
+  };
+}
+
+function sceneViewBoxSize(aspectRatio: number, zoom: number) {
+  const aspect = aspectRatio > 0 ? aspectRatio : 1100 / 620;
+  return {
+    width: Math.max(1100, 620 * aspect) / zoom,
+    height: Math.max(620, 1100 / aspect) / zoom,
+  };
+}
+
+function fitTerminalScene(document: TerminalDocument, aspectRatio: number) {
+  if (document.nodes.length === 0) return { x: 0, y: 0, zoom: 1 };
+  const positions = document.nodes.map((node, index) => ({
+    x: typeof node.x === 'number' ? node.x : 100 + (index % 6) * 170,
+    y: typeof node.y === 'number' ? node.y : 100 + Math.floor(index / 6) * 135,
+  }));
+  const minX = Math.min(...positions.map(({ x }) => x - 80));
+  const maxX = Math.max(...positions.map(({ x }) => x + 80));
+  const minY = Math.min(...positions.map(({ y }) => y - 80));
+  const maxY = Math.max(...positions.map(({ y }) => y + 90));
+  const contentWidth = maxX - minX + 80;
+  const contentHeight = maxY - minY + 80;
+  const aspect = aspectRatio > 0 ? aspectRatio : 1100 / 620;
+  const baseWidth = Math.max(1100, 620 * aspect);
+  const baseHeight = Math.max(620, 1100 / aspect);
+  const zoom = Math.min(
+    5,
+    Math.max(
+      0.12,
+      Math.min((baseWidth * 0.88) / contentWidth, (baseHeight * 0.84) / contentHeight),
+    ),
+  );
+  const viewBox = sceneViewBoxSize(aspect, zoom);
+  return {
+    x: (minX + maxX - viewBox.width) / 2,
+    y: (minY + maxY - viewBox.height) / 2,
     zoom,
   };
 }
@@ -568,6 +726,7 @@ function TerminalEditor({
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [sceneView, setSceneView] = useState(() => initialSceneView(initialDocument));
+  const [canvasAspect, setCanvasAspect] = useState(1100 / 620);
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
   const [drawingMode, setDrawingMode] = useState<'pipeline' | 'component' | 'conceptual' | null>(
     null,
@@ -578,12 +737,32 @@ function TerminalEditor({
   const [dirty, setDirty] = useState(false);
   const [editorMessage, setEditorMessage] = useState('');
   const [savedVersion, setSavedVersion] = useState(version);
+  const [viewMode, setViewMode] = useState<'layout' | 'graph'>('layout');
+  const terminalGraph = useQuery({
+    queryKey: ['terminal-graph', terminalId, savedVersion],
+    queryFn: () => getTerminalGraph(terminalId, savedVersion),
+    enabled: viewMode === 'graph',
+  });
+  useEffect(() => {
+    const svg = sceneRef.current;
+    if (!svg) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) setCanvasAspect(width / height);
+    });
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (viewMode === 'graph') setSceneView(fitTerminalScene(document, canvasAspect));
+  }, [canvasAspect, document, viewMode]);
   const save = useMutation({
     mutationFn: () => saveTerminalDocument(terminalId, document, 'Designer changes'),
     onSuccess: async (result) => {
       setSavedVersion(result.version);
       setDirty(false);
       await queryClient.invalidateQueries({ queryKey: ['terminal', terminalId] });
+      await queryClient.invalidateQueries({ queryKey: ['terminal-graph', terminalId] });
       await queryClient.invalidateQueries({ queryKey: ['terminals'] });
     },
   });
@@ -618,8 +797,6 @@ function TerminalEditor({
   const selectedConceptualLink = conceptualLinks.find(
     (link) => link.id === selectedConceptualLinkId,
   );
-  const sceneWidth = Math.max(1100, ...nodePositions.map(({ x }) => x + 120));
-  const sceneHeight = Math.max(620, ...nodePositions.map(({ y }) => y + 100));
   const nodeById = new Map(document.nodes.map((node) => [node.id, node]));
   const elementGroups = new Map<string, TerminalElement[]>();
   for (const element of document.elements) {
@@ -958,39 +1135,25 @@ function TerminalEditor({
 
   function adjustZoom(factor: number, anchor?: Point) {
     const zoom = Math.max(0.12, Math.min(5, sceneView.zoom * factor));
-    const width = 1100 / sceneView.zoom;
-    const height = 620 / sceneView.zoom;
+    const currentSize = sceneViewBoxSize(canvasAspect, sceneView.zoom);
+    const nextSize = sceneViewBoxSize(canvasAspect, zoom);
+    const width = currentSize.width;
+    const height = currentSize.height;
     const anchorX = anchor?.x ?? sceneView.x + width / 2;
     const anchorY = anchor?.y ?? sceneView.y + height / 2;
     const xRatio = (anchorX - sceneView.x) / width;
     const yRatio = (anchorY - sceneView.y) / height;
     setSceneView({
-      x: anchorX - (1100 / zoom) * xRatio,
-      y: anchorY - (620 / zoom) * yRatio,
+      x: anchorX - nextSize.width * xRatio,
+      y: anchorY - nextSize.height * yRatio,
       zoom,
     });
   }
 
   function fitScene() {
-    const positions = nodePositions;
-    if (positions.length === 0) {
-      setSceneView({ x: 0, y: 0, zoom: 1 });
-      return;
-    }
-    const minX = Math.min(...positions.map(({ x }) => x - 80));
-    const maxX = Math.max(...positions.map(({ x }) => x + 80));
-    const minY = Math.min(...positions.map(({ y }) => y - 80));
-    const maxY = Math.max(...positions.map(({ y }) => y + 90));
-    const contentWidth = Math.max(sceneWidth, maxX - minX + 80);
-    const contentHeight = Math.max(sceneHeight, maxY - minY + 80);
-    const zoom = Math.max(0.12, Math.min(1, 1020 / contentWidth, 560 / contentHeight));
-    const width = 1100 / zoom;
-    const height = 620 / zoom;
-    setSceneView({
-      x: (sceneWidth - width) / 2,
-      y: (sceneHeight - height) / 2,
-      zoom,
-    });
+    const bounds = sceneRef.current?.getBoundingClientRect();
+    const aspect = bounds && bounds.height > 0 ? bounds.width / bounds.height : canvasAspect;
+    setSceneView(fitTerminalScene(document, aspect));
   }
 
   function panCanvas(event: React.PointerEvent<SVGSVGElement>) {
@@ -1087,7 +1250,7 @@ function TerminalEditor({
         <div className="design-actions" role="group" aria-label="Edit actions">
           <button
             aria-label="Undo"
-            disabled={history.past.length === 0}
+            disabled={viewMode === 'graph' || history.past.length === 0}
             title="Undo (Ctrl+Z)"
             type="button"
             onClick={undo}
@@ -1096,7 +1259,7 @@ function TerminalEditor({
           </button>
           <button
             aria-label="Redo"
-            disabled={history.future.length === 0}
+            disabled={viewMode === 'graph' || history.future.length === 0}
             title="Redo (Ctrl+Y)"
             type="button"
             onClick={redo}
@@ -1105,7 +1268,7 @@ function TerminalEditor({
           </button>
           <button
             aria-label="Duplicate equipment"
-            disabled={!selectedNode}
+            disabled={viewMode === 'graph' || !selectedNode}
             title="Duplicate selected equipment"
             type="button"
             onClick={duplicateSelectedNode}
@@ -1114,7 +1277,7 @@ function TerminalEditor({
           </button>
           <button
             aria-label="Delete selected object"
-            disabled={!selectedNodeId && !selectedElementId}
+            disabled={viewMode === 'graph' || (!selectedNodeId && !selectedElementId)}
             title="Delete (Delete)"
             type="button"
             onClick={deleteSelection}
@@ -1122,10 +1285,37 @@ function TerminalEditor({
             <Trash2 size={16} />
           </button>
         </div>
+        <div className="view-mode-switch" role="group" aria-label="Designer view">
+          <button
+            aria-pressed={viewMode === 'layout'}
+            className={viewMode === 'layout' ? 'is-active' : ''}
+            type="button"
+            onClick={() => setViewMode('layout')}
+          >
+            Layout
+          </button>
+          <button
+            aria-pressed={viewMode === 'graph'}
+            className={viewMode === 'graph' ? 'is-active' : ''}
+            type="button"
+            onClick={() => {
+              setViewMode('graph');
+              fitScene();
+              setDrawingMode(null);
+              setConnectFrom(null);
+              setSelectedNodeId(null);
+              setSelectedElementId(null);
+              setSelectedConceptualLinkId(null);
+            }}
+          >
+            <GitBranch size={14} /> Graph
+          </button>
+        </div>
         <label className="toolbar-select compact-select">
           <span className="sr-only">Place equipment</span>
           <select
             aria-label="Place equipment"
+            disabled={viewMode === 'graph'}
             defaultValue=""
             onChange={(event) => {
               if (event.target.value) addNode(event.target.value as TerminalNode['type']);
@@ -1145,6 +1335,7 @@ function TerminalEditor({
         <label className="toolbar-select">
           <span className="sr-only">Pipeline type</span>
           <select
+            disabled={viewMode === 'graph'}
             value={pipelineType}
             onChange={(event) => setPipelineType(event.target.value as TerminalElement['type'])}
           >
@@ -1158,6 +1349,7 @@ function TerminalEditor({
         <button
           aria-label={drawingMode === 'pipeline' ? 'Cancel pipeline' : 'Draw pipeline'}
           className={`tool-button${drawingMode === 'pipeline' ? ' is-selected' : ''}`}
+          disabled={viewMode === 'graph'}
           title={drawingMode === 'pipeline' ? 'Cancel pipeline' : 'Draw pipeline'}
           type="button"
           onClick={() => {
@@ -1171,6 +1363,7 @@ function TerminalEditor({
         <label className="toolbar-select">
           <span className="sr-only">Inline component type</span>
           <select
+            disabled={viewMode === 'graph'}
             value={componentType}
             onChange={(event) => setComponentType(event.target.value as TerminalElement['type'])}
           >
@@ -1184,6 +1377,7 @@ function TerminalEditor({
         <button
           aria-label={drawingMode === 'component' ? 'Cancel component' : 'Insert component'}
           className={`tool-button${drawingMode === 'component' ? ' is-selected' : ''}`}
+          disabled={viewMode === 'graph'}
           title={drawingMode === 'component' ? 'Cancel component' : 'Insert inline component'}
           type="button"
           onClick={() => {
@@ -1197,6 +1391,7 @@ function TerminalEditor({
         <button
           aria-label={drawingMode === 'conceptual' ? 'Cancel conceptual link' : 'Link equipment'}
           className={`tool-button${drawingMode === 'conceptual' ? ' is-selected' : ''}`}
+          disabled={viewMode === 'graph'}
           title="Create non-routing conceptual link"
           type="button"
           onClick={() => {
@@ -1210,6 +1405,7 @@ function TerminalEditor({
         <button
           aria-pressed={snapToGrid}
           className={`tool-button snap-button${snapToGrid ? ' is-selected' : ''}`}
+          disabled={viewMode === 'graph'}
           aria-label="Toggle snap to grid"
           title="Toggle snap to grid"
           type="button"
@@ -1241,7 +1437,7 @@ function TerminalEditor({
       </div>
       <div className="designer-workspace">
         <section className="canvas-frame" aria-label="Terminal layout canvas">
-          {document.nodes.length === 0 && (
+          {viewMode === 'layout' && document.nodes.length === 0 && (
             <div className="canvas-empty">
               <Boxes size={30} />
               <strong>Start your terminal layout</strong>
@@ -1251,7 +1447,7 @@ function TerminalEditor({
           <svg
             ref={sceneRef}
             className="terminal-canvas"
-            viewBox={`${sceneView.x} ${sceneView.y} ${1100 / sceneView.zoom} ${620 / sceneView.zoom}`}
+            viewBox={`${sceneView.x} ${sceneView.y} ${sceneViewBoxSize(canvasAspect, sceneView.zoom).width} ${sceneViewBoxSize(canvasAspect, sceneView.zoom).height}`}
             preserveAspectRatio="xMidYMid meet"
             role="application"
             aria-label="Terminal equipment and connections"
@@ -1264,164 +1460,218 @@ function TerminalEditor({
               adjustZoom(event.deltaY < 0 ? 1.12 : 1 / 1.12, scenePoint(event));
             }}
           >
-            {document.elements.map((element) => {
-              const fromCenter = positionById.get(element.from);
-              const toCenter = positionById.get(element.to);
-              const fromNode = nodeById.get(element.from);
-              const toNode = nodeById.get(element.to);
-              if (!fromCenter || !toCenter || !fromNode || !toNode) return null;
-              const from = nearestPort(fromNode, fromCenter, toCenter);
-              const to = nearestPort(toNode, toCenter, fromCenter);
-              const middleX = (from.x + to.x) / 2;
-              const middleY = (from.y + to.y) / 2;
-              const laneY = middleY + (parallelOffsets.get(element.id) ?? 0);
-              const path = `M ${from.x} ${from.y} H ${middleX} V ${laneY} H ${to.x} V ${to.y}`;
-              const isComponent = INLINE_COMPONENTS.includes(element.type);
-              const elementColor = elementColors[element.id] ?? '#52796f';
-              const label = elementLabels[element.id] ?? element.type.replaceAll('_', ' ');
-              const width = Math.max(3, Math.min(10, (element.diameter_mm ?? 300) / 80));
-              return (
-                <g
-                  key={element.id}
-                  className={`network-object${selectedElementId === element.id ? ' is-selected' : ''}`}
-                  onClick={() => {
-                    setSelectedElementId(element.id);
-                    setSelectedNodeId(null);
-                    setSelectedConceptualLinkId(null);
-                  }}
-                >
-                  <path className="network-hitarea" d={path} />
-                  <path
-                    className={`pipeline-path${element.installation === 'UNDERGROUND' ? ' is-underground' : ''}`}
-                    d={path}
-                    stroke={elementColor}
-                    strokeWidth={width}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  {isComponent && element.type === 'PUMP' && (
-                    <g className="inline-pump" transform={`translate(${middleX} ${middleY})`}>
-                      <circle r="19" fill="#fff" stroke={elementColor} strokeWidth="4" />
-                      <path d="M-6 -9 L10 0 L-6 9 Z" fill={elementColor} />
-                    </g>
-                  )}
-                  {isComponent && element.type === 'VALVE' && (
-                    <g className="inline-valve" transform={`translate(${middleX} ${middleY})`}>
-                      <path
-                        d="M-18 -14 L0 0 L-18 14 Z M18 -14 L0 0 L18 14 Z"
-                        fill="#fff"
-                        stroke={elementColor}
-                        strokeWidth="3"
-                      />
-                    </g>
-                  )}
-                  {sceneView.zoom >= 0.5 && (
-                    <text
-                      className="network-label"
-                      x={middleX}
-                      y={middleY - (isComponent ? 24 : 10)}
-                    >
-                      {label}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-            {conceptualLinks.map((link) => {
-              const fromCenter = positionById.get(link.from);
-              const toCenter = positionById.get(link.to);
-              const fromNode = nodeById.get(link.from);
-              const toNode = nodeById.get(link.to);
-              if (!fromCenter || !toCenter || !fromNode || !toNode) return null;
-              const from = nearestPort(fromNode, fromCenter, toCenter);
-              const to = nearestPort(toNode, toCenter, fromCenter);
-              const middleX = (from.x + to.x) / 2;
-              const middleY = (from.y + to.y) / 2;
-              return (
-                <g
-                  key={link.id}
-                  className={`conceptual-object${selectedConceptualLinkId === link.id ? ' is-selected' : ''}`}
-                  onClick={() => {
-                    setSelectedConceptualLinkId(link.id);
-                    setSelectedNodeId(null);
-                    setSelectedElementId(null);
-                  }}
-                >
-                  <path d={`M ${from.x} ${from.y} H ${middleX} V ${to.y} H ${to.x}`} />
-                  {sceneView.zoom >= 0.4 && (
-                    <text x={middleX} y={middleY - 6}>
-                      {link.label}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-            {nodePositions.map(({ node, x, y }) => (
-              <g
-                aria-label={`${node.type}: ${node.name ?? node.id}`}
-                className={`equipment-node${selectedNodeId === node.id ? ' is-selected' : ''}${connectFrom === node.id ? ' is-connect-start' : ''}`}
-                key={node.id}
-                onClick={() => {
-                  if (suppressNodeClick.current) {
-                    suppressNodeClick.current = false;
-                    return;
+            {viewMode === 'graph' ? (
+              terminalGraph.data && (
+                <TerminalGraphLayers
+                  graph={terminalGraph.data}
+                  zoom={sceneView.zoom}
+                  labelScale={
+                    sceneViewBoxSize(canvasAspect, 1).width /
+                    ((sceneRef.current?.clientWidth || 1100) * sceneView.zoom)
                   }
-                  selectNode(node);
-                }}
-                onPointerDown={(event) => {
-                  if (drawingMode) return;
-                  event.preventDefault();
-                  suppressNodeClick.current = false;
-                  setSelectedNodeId(null);
-                  setSelectedElementId(null);
-                  setSelectedConceptualLinkId(null);
-                  setDraggingNodeId(node.id);
-                  dragStartPosition.current = { x, y };
-                  setDragPreview({ x, y });
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') selectNode(node);
-                }}
-                role="button"
-                tabIndex={0}
-                transform={`translate(${x}, ${y})`}
-              >
-                <rect className="node-hitarea" x="-64" y="-46" width="128" height="100" rx="4" />
-                {selectedNodeId === node.id && (
-                  <rect
-                    className="node-selection"
-                    x="-64"
-                    y="-46"
-                    width="128"
-                    height="100"
-                    rx="4"
-                  />
-                )}
-                {node.type === 'MANIFOLD' ? (
-                  <g transform="scale(0.72)">
-                    <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#b9d4c9'} />
-                  </g>
-                ) : (
-                  <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#b9d4c9'} />
-                )}
-                {(drawingMode !== null || selectedNodeId === node.id) &&
-                  equipmentPorts(node.type).map((port, index) => (
-                    <circle
-                      key={`${node.id}-port-${index}`}
-                      className="equipment-port"
-                      cx={port.x}
-                      cy={port.y}
-                      r="4"
+                />
+              )
+            ) : (
+              <g className="layout-layers">
+                {document.elements.map((element) => {
+                  const fromCenter = positionById.get(element.from);
+                  const toCenter = positionById.get(element.to);
+                  const fromNode = nodeById.get(element.from);
+                  const toNode = nodeById.get(element.to);
+                  if (!fromCenter || !toCenter || !fromNode || !toNode) return null;
+                  const from = nearestPort(fromNode, fromCenter, toCenter);
+                  const to = nearestPort(toNode, toCenter, fromCenter);
+                  const middleX = (from.x + to.x) / 2;
+                  const middleY = (from.y + to.y) / 2;
+                  const laneY = middleY + (parallelOffsets.get(element.id) ?? 0);
+                  const path = `M ${from.x} ${from.y} H ${middleX} V ${laneY} H ${to.x} V ${to.y}`;
+                  const isComponent = INLINE_COMPONENTS.includes(element.type);
+                  const elementColor = elementColors[element.id] ?? '#52796f';
+                  const label = elementLabels[element.id] ?? element.type.replaceAll('_', ' ');
+                  const width = Math.max(3, Math.min(10, (element.diameter_mm ?? 300) / 80));
+                  return (
+                    <g
+                      key={element.id}
+                      className={`network-object${selectedElementId === element.id ? ' is-selected' : ''}`}
+                      onClick={() => {
+                        setSelectedElementId(element.id);
+                        setSelectedNodeId(null);
+                        setSelectedConceptualLinkId(null);
+                      }}
+                    >
+                      <path className="network-hitarea" d={path} />
+                      <path
+                        className={`pipeline-path${element.installation === 'UNDERGROUND' ? ' is-underground' : ''}`}
+                        d={path}
+                        stroke={elementColor}
+                        strokeWidth={width}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      {isComponent && element.type === 'PUMP' && (
+                        <g className="inline-pump" transform={`translate(${middleX} ${middleY})`}>
+                          <circle r="19" fill="#fff" stroke={elementColor} strokeWidth="4" />
+                          <path d="M-6 -9 L10 0 L-6 9 Z" fill={elementColor} />
+                        </g>
+                      )}
+                      {isComponent && element.type === 'VALVE' && (
+                        <g className="inline-valve" transform={`translate(${middleX} ${middleY})`}>
+                          <path
+                            d="M-18 -14 L0 0 L-18 14 Z M18 -14 L0 0 L18 14 Z"
+                            fill="#fff"
+                            stroke={elementColor}
+                            strokeWidth="3"
+                          />
+                        </g>
+                      )}
+                      {sceneView.zoom >= 0.5 && (
+                        <text
+                          className="network-label"
+                          x={middleX}
+                          y={middleY - (isComponent ? 24 : 10)}
+                        >
+                          {label}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+                {conceptualLinks.map((link) => {
+                  const fromCenter = positionById.get(link.from);
+                  const toCenter = positionById.get(link.to);
+                  const fromNode = nodeById.get(link.from);
+                  const toNode = nodeById.get(link.to);
+                  if (!fromCenter || !toCenter || !fromNode || !toNode) return null;
+                  const from = nearestPort(fromNode, fromCenter, toCenter);
+                  const to = nearestPort(toNode, toCenter, fromCenter);
+                  const middleX = (from.x + to.x) / 2;
+                  const middleY = (from.y + to.y) / 2;
+                  return (
+                    <g
+                      key={link.id}
+                      className={`conceptual-object${selectedConceptualLinkId === link.id ? ' is-selected' : ''}`}
+                      onClick={() => {
+                        setSelectedConceptualLinkId(link.id);
+                        setSelectedNodeId(null);
+                        setSelectedElementId(null);
+                      }}
+                    >
+                      <path d={`M ${from.x} ${from.y} H ${middleX} V ${to.y} H ${to.x}`} />
+                      {sceneView.zoom >= 0.4 && (
+                        <text x={middleX} y={middleY - 6}>
+                          {link.label}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+                {nodePositions.map(({ node, x, y }) => (
+                  <g
+                    aria-label={`${node.type}: ${node.name ?? node.id}`}
+                    className={`equipment-node${selectedNodeId === node.id ? ' is-selected' : ''}${connectFrom === node.id ? ' is-connect-start' : ''}`}
+                    key={node.id}
+                    onClick={() => {
+                      if (suppressNodeClick.current) {
+                        suppressNodeClick.current = false;
+                        return;
+                      }
+                      selectNode(node);
+                    }}
+                    onPointerDown={(event) => {
+                      if (drawingMode) return;
+                      event.preventDefault();
+                      suppressNodeClick.current = false;
+                      setSelectedNodeId(null);
+                      setSelectedElementId(null);
+                      setSelectedConceptualLinkId(null);
+                      setDraggingNodeId(node.id);
+                      dragStartPosition.current = { x, y };
+                      setDragPreview({ x, y });
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') selectNode(node);
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    transform={`translate(${x}, ${y})`}
+                  >
+                    <rect
+                      className="node-hitarea"
+                      x="-64"
+                      y="-46"
+                      width="128"
+                      height="100"
+                      rx="4"
                     />
-                  ))}
-                {sceneView.zoom >= 0.35 && (
-                  <text className="node-name" x="0" y="51">
-                    {node.name ?? node.id}
-                  </text>
-                )}
+                    {selectedNodeId === node.id && (
+                      <rect
+                        className="node-selection"
+                        x="-64"
+                        y="-46"
+                        width="128"
+                        height="100"
+                        rx="4"
+                      />
+                    )}
+                    {node.type === 'MANIFOLD' ? (
+                      <g transform="scale(0.72)">
+                        <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#b9d4c9'} />
+                      </g>
+                    ) : (
+                      <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#b9d4c9'} />
+                    )}
+                    {(drawingMode !== null || selectedNodeId === node.id) &&
+                      equipmentPorts(node.type).map((port, index) => (
+                        <circle
+                          key={`${node.id}-port-${index}`}
+                          className="equipment-port"
+                          cx={port.x}
+                          cy={port.y}
+                          r="4"
+                        />
+                      ))}
+                    {sceneView.zoom >= 0.35 && (
+                      <text className="node-name" x="0" y="51">
+                        {node.name ?? node.id}
+                      </text>
+                    )}
+                  </g>
+                ))}
               </g>
-            ))}
+            )}
           </svg>
+          {viewMode === 'graph' && (
+            <div className="graph-readout" role="status" aria-live="polite">
+              {terminalGraph.isPending ? (
+                <span>Loading graph…</span>
+              ) : terminalGraph.isError ? (
+                <span className="graph-readout-error">{terminalGraph.error.message}</span>
+              ) : terminalGraph.data ? (
+                <>
+                  <strong>GRAPH · V{terminalGraph.data.terminal_version}</strong>
+                  <span>
+                    {terminalGraph.data.nodes.length} nodes · {terminalGraph.data.elements.length}{' '}
+                    elements · {terminalGraph.data.arcs.filter((arc) => arc.traversable).length}{' '}
+                    traversable arcs
+                  </span>
+                  {terminalGraph.data.issues.length > 0 && (
+                    <span className="graph-readout-warning">
+                      {terminalGraph.data.issues.length} validation issue
+                      {terminalGraph.data.issues.length === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {dirty && (
+                    <span className="graph-readout-warning">
+                      Unsaved edits; showing saved graph
+                    </span>
+                  )}
+                  <span className="graph-readout-legend">
+                    Arrows show flow direction · X marks blocked pump reverse flow
+                  </span>
+                </>
+              ) : null}
+            </div>
+          )}
           <div className="canvas-zoom" role="group" aria-label="Canvas zoom">
             <button
               aria-label="Zoom out"
@@ -1488,299 +1738,309 @@ function TerminalEditor({
               )}
             </aside>
           )}
-          {(selectedNode || selectedElement || selectedConceptualLink) && selectedAnchor && (
-            <aside
-              ref={popoverRef}
-              className="object-popover"
-              aria-label="Selected object properties"
-              style={{ left: `${popoverPosition.left}px`, top: `${popoverPosition.top}px` }}
-            >
-              <div className="panel-heading">
-                <span className="eyebrow">PROPERTIES</span>
-                <strong>
-                  {selectedConceptualLink
-                    ? 'CONCEPTUAL LINK'
-                    : selectedNode
-                      ? selectedNode.type.replaceAll('_', ' ')
-                      : selectedElement
-                        ? selectedElement.type === 'PUMP' || selectedElement.type === 'VALVE'
-                          ? `INLINE ${selectedElement.type}`
-                          : 'PIPELINE'
-                        : 'OBJECT'}
-                </strong>
-                <button
-                  aria-label="Close properties"
-                  className="popover-close"
-                  type="button"
-                  onClick={() => {
-                    setSelectedNodeId(null);
-                    setSelectedElementId(null);
-                    setSelectedConceptualLinkId(null);
-                  }}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-              {selectedConceptualLink ? (
-                <div className="property-fields">
-                  <label>
-                    Association ID
-                    <input readOnly value={selectedConceptualLink.id} />
-                  </label>
-                  <label>
-                    Label
-                    <input
-                      value={selectedConceptualLink.label}
-                      onChange={(event) => updateConceptualLink({ label: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    Line color
-                    <input
-                      aria-label="Association color"
-                      type="color"
-                      value={selectedConceptualLink.color}
-                      onChange={(event) => updateConceptualLink({ color: event.target.value })}
-                    />
-                  </label>
-                  <p className="conceptual-note">Visual only · excluded from route calculations</p>
+          {viewMode === 'layout' &&
+            (selectedNode || selectedElement || selectedConceptualLink) &&
+            selectedAnchor && (
+              <aside
+                ref={popoverRef}
+                className="object-popover"
+                aria-label="Selected object properties"
+                style={{ left: `${popoverPosition.left}px`, top: `${popoverPosition.top}px` }}
+              >
+                <div className="panel-heading">
+                  <span className="eyebrow">PROPERTIES</span>
+                  <strong>
+                    {selectedConceptualLink
+                      ? 'CONCEPTUAL LINK'
+                      : selectedNode
+                        ? selectedNode.type.replaceAll('_', ' ')
+                        : selectedElement
+                          ? selectedElement.type === 'PUMP' || selectedElement.type === 'VALVE'
+                            ? `INLINE ${selectedElement.type}`
+                            : 'PIPELINE'
+                          : 'OBJECT'}
+                  </strong>
+                  <button
+                    aria-label="Close properties"
+                    className="popover-close"
+                    type="button"
+                    onClick={() => {
+                      setSelectedNodeId(null);
+                      setSelectedElementId(null);
+                      setSelectedConceptualLinkId(null);
+                    }}
+                  >
+                    <X size={15} />
+                  </button>
                 </div>
-              ) : selectedNode ? (
-                <div className="property-fields">
-                  <label>
-                    Tag / ID
-                    <input readOnly value={selectedNode.id} />
-                  </label>
-                  <label>
-                    Label
-                    <input
-                      value={selectedNode.name ?? ''}
-                      onChange={(event) => updateNode({ name: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    Symbol color
-                    <input
-                      aria-label="Equipment color"
-                      type="color"
-                      value={nodeColors[selectedNode.id] ?? '#b9d4c9'}
-                      onChange={(event) =>
-                        updateLayoutMap('node_colors', selectedNode.id, event.target.value)
-                      }
-                    />
-                  </label>
-                  {selectedNode.type === 'TANK' && (
-                    <>
-                      <label>
-                        Capacity (m³)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedNode.capacity_m3 ?? 0}
-                          onChange={(event) =>
-                            updateNode({ capacity_m3: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Stock (m³)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedNode.stock_m3 ?? 0}
-                          onChange={(event) => updateNode({ stock_m3: Number(event.target.value) })}
-                        />
-                      </label>
-                    </>
-                  )}
-                  {selectedNode.type === 'JETTY' && (
+                {selectedConceptualLink ? (
+                  <div className="property-fields">
                     <label>
-                      Max rate (m³/h)
+                      Association ID
+                      <input readOnly value={selectedConceptualLink.id} />
+                    </label>
+                    <label>
+                      Label
                       <input
-                        min="0"
-                        type="number"
-                        value={selectedNode.max_rate_m3h ?? 0}
+                        value={selectedConceptualLink.label}
+                        onChange={(event) => updateConceptualLink({ label: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Line color
+                      <input
+                        aria-label="Association color"
+                        type="color"
+                        value={selectedConceptualLink.color}
+                        onChange={(event) => updateConceptualLink({ color: event.target.value })}
+                      />
+                    </label>
+                    <p className="conceptual-note">
+                      Visual only · excluded from route calculations
+                    </p>
+                  </div>
+                ) : selectedNode ? (
+                  <div className="property-fields">
+                    <label>
+                      Tag / ID
+                      <input readOnly value={selectedNode.id} />
+                    </label>
+                    <label>
+                      Label
+                      <input
+                        value={selectedNode.name ?? ''}
+                        onChange={(event) => updateNode({ name: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Symbol color
+                      <input
+                        aria-label="Equipment color"
+                        type="color"
+                        value={nodeColors[selectedNode.id] ?? '#b9d4c9'}
                         onChange={(event) =>
-                          updateNode({ max_rate_m3h: Number(event.target.value) })
+                          updateLayoutMap('node_colors', selectedNode.id, event.target.value)
                         }
                       />
                     </label>
-                  )}
-                  {selectedNode.type === 'RAIL_PLATFORM' && (
-                    <>
+                    {selectedNode.type === 'TANK' && (
+                      <>
+                        <label>
+                          Capacity (m³)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedNode.capacity_m3 ?? 0}
+                            onChange={(event) =>
+                              updateNode({ capacity_m3: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Stock (m³)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedNode.stock_m3 ?? 0}
+                            onChange={(event) =>
+                              updateNode({ stock_m3: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                      </>
+                    )}
+                    {selectedNode.type === 'JETTY' && (
                       <label>
-                        Track sides
-                        <input
-                          min="1"
-                          type="number"
-                          value={selectedNode.side_count ?? 1}
-                          onChange={(event) =>
-                            updateNode({ side_count: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Cars per side
-                        <input
-                          min="1"
-                          type="number"
-                          value={selectedNode.cars_per_side ?? 1}
-                          onChange={(event) =>
-                            updateNode({ cars_per_side: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                    </>
-                  )}
-                  {selectedNode.type === 'RAIL_CAR' && (
-                    <>
-                      <label>
-                        Capacity (m³)
+                        Max rate (m³/h)
                         <input
                           min="0"
                           type="number"
-                          value={selectedNode.capacity_m3 ?? 0}
+                          value={selectedNode.max_rate_m3h ?? 0}
                           onChange={(event) =>
-                            updateNode({ capacity_m3: Number(event.target.value) })
+                            updateNode({ max_rate_m3h: Number(event.target.value) })
                           }
                         />
                       </label>
-                      <label>
-                        Stock (m³)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedNode.stock_m3 ?? 0}
-                          onChange={(event) => updateNode({ stock_m3: Number(event.target.value) })}
-                        />
-                      </label>
-                    </>
-                  )}
-                </div>
-              ) : selectedElement ? (
-                <div className="property-fields">
-                  <label>
-                    Object ID
-                    <input readOnly value={selectedElement.id} />
-                  </label>
-                  <label>
-                    Label
-                    <input
-                      value={elementLabels[selectedElement.id] ?? ''}
-                      placeholder={selectedElement.type.replaceAll('_', ' ')}
-                      onChange={(event) =>
-                        updateLayoutMap('element_labels', selectedElement.id, event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    Object color
-                    <input
-                      aria-label="Object color"
-                      type="color"
-                      value={elementColors[selectedElement.id] ?? '#52796f'}
-                      onChange={(event) =>
-                        updateLayoutMap('element_colors', selectedElement.id, event.target.value)
-                      }
-                    />
-                  </label>
-                  {PIPE_TYPES.includes(selectedElement.type) && (
-                    <>
-                      <label>
-                        Diameter (mm)
-                        <input
-                          min="1"
-                          type="number"
-                          value={selectedElement.diameter_mm ?? 300}
-                          onChange={(event) =>
-                            updateElement({ diameter_mm: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Length (m)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedElement.length_m ?? 0}
-                          onChange={(event) =>
-                            updateElement({ length_m: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Installation
-                        <select
-                          value={selectedElement.installation ?? 'ABOVEGROUND'}
-                          onChange={(event) =>
-                            updateElement({
-                              installation: event.target.value as TerminalElement['installation'],
-                            })
-                          }
-                        >
-                          <option value="ABOVEGROUND">Above ground</option>
-                          <option value="UNDERGROUND">Underground</option>
-                        </select>
-                      </label>
-                    </>
-                  )}
-                  {selectedElement.type === 'PUMP' && (
-                    <>
-                      <label>
-                        Head (m)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedElement.head_m ?? 0}
-                          onChange={(event) =>
-                            updateElement({ head_m: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Max flow (m³/h)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedElement.max_flow_m3h ?? 0}
-                          onChange={(event) =>
-                            updateElement({ max_flow_m3h: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                    </>
-                  )}
-                  {selectedElement.type === 'VALVE' && (
-                    <>
-                      <label>
-                        Operation time (min)
-                        <input
-                          min="0"
-                          type="number"
-                          value={selectedElement.operate_min ?? 0}
-                          onChange={(event) =>
-                            updateElement({ operate_min: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Valve state
-                        <select
-                          value={selectedElement.state ?? 'OPEN'}
-                          onChange={(event) =>
-                            updateElement({ state: event.target.value as TerminalElement['state'] })
-                          }
-                        >
-                          <option value="OPEN">Open</option>
-                          <option value="CLOSED">Closed</option>
-                        </select>
-                      </label>
-                    </>
-                  )}
-                </div>
-              ) : null}
-            </aside>
-          )}
+                    )}
+                    {selectedNode.type === 'RAIL_PLATFORM' && (
+                      <>
+                        <label>
+                          Track sides
+                          <input
+                            min="1"
+                            type="number"
+                            value={selectedNode.side_count ?? 1}
+                            onChange={(event) =>
+                              updateNode({ side_count: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Cars per side
+                          <input
+                            min="1"
+                            type="number"
+                            value={selectedNode.cars_per_side ?? 1}
+                            onChange={(event) =>
+                              updateNode({ cars_per_side: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                      </>
+                    )}
+                    {selectedNode.type === 'RAIL_CAR' && (
+                      <>
+                        <label>
+                          Capacity (m³)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedNode.capacity_m3 ?? 0}
+                            onChange={(event) =>
+                              updateNode({ capacity_m3: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Stock (m³)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedNode.stock_m3 ?? 0}
+                            onChange={(event) =>
+                              updateNode({ stock_m3: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                      </>
+                    )}
+                  </div>
+                ) : selectedElement ? (
+                  <div className="property-fields">
+                    <label>
+                      Object ID
+                      <input readOnly value={selectedElement.id} />
+                    </label>
+                    <label>
+                      Label
+                      <input
+                        value={elementLabels[selectedElement.id] ?? ''}
+                        placeholder={selectedElement.type.replaceAll('_', ' ')}
+                        onChange={(event) =>
+                          updateLayoutMap('element_labels', selectedElement.id, event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      Object color
+                      <input
+                        aria-label="Object color"
+                        type="color"
+                        value={elementColors[selectedElement.id] ?? '#52796f'}
+                        onChange={(event) =>
+                          updateLayoutMap('element_colors', selectedElement.id, event.target.value)
+                        }
+                      />
+                    </label>
+                    {PIPE_TYPES.includes(selectedElement.type) && (
+                      <>
+                        <label>
+                          Diameter (mm)
+                          <input
+                            min="1"
+                            type="number"
+                            value={selectedElement.diameter_mm ?? 300}
+                            onChange={(event) =>
+                              updateElement({ diameter_mm: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Length (m)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedElement.length_m ?? 0}
+                            onChange={(event) =>
+                              updateElement({ length_m: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Installation
+                          <select
+                            value={selectedElement.installation ?? 'ABOVEGROUND'}
+                            onChange={(event) =>
+                              updateElement({
+                                installation: event.target.value as TerminalElement['installation'],
+                              })
+                            }
+                          >
+                            <option value="ABOVEGROUND">Above ground</option>
+                            <option value="UNDERGROUND">Underground</option>
+                          </select>
+                        </label>
+                      </>
+                    )}
+                    {selectedElement.type === 'PUMP' && (
+                      <>
+                        <label>
+                          Head (m)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedElement.head_m ?? 0}
+                            onChange={(event) =>
+                              updateElement({ head_m: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Max flow (m³/h)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedElement.max_flow_m3h ?? 0}
+                            onChange={(event) =>
+                              updateElement({ max_flow_m3h: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                      </>
+                    )}
+                    {selectedElement.type === 'VALVE' && (
+                      <>
+                        <label>
+                          Operation time (min)
+                          <input
+                            min="0"
+                            type="number"
+                            value={selectedElement.operate_min ?? 0}
+                            onChange={(event) =>
+                              updateElement({ operate_min: Number(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Valve state
+                          <select
+                            value={selectedElement.state ?? 'OPEN'}
+                            onChange={(event) =>
+                              updateElement({
+                                state: event.target.value as TerminalElement['state'],
+                              })
+                            }
+                          >
+                            <option value="OPEN">Open</option>
+                            <option value="CLOSED">Closed</option>
+                          </select>
+                        </label>
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </aside>
+            )}
         </section>
       </div>
     </div>

@@ -6,6 +6,13 @@ export type TerminalDocument = TerminalDocumentModel;
 export type TerminalDetail = components['schemas']['TerminalVersionDetail'];
 export type ValidationIssue = components['schemas']['ValidationIssue'];
 
+export type TerminalGraph = Omit<components['schemas']['TerminalGraph'], 'nodes' | 'elements'> & {
+  nodes: TerminalDocument['nodes'];
+  elements: TerminalDocument['elements'];
+};
+
+export type TerminalGraphArc = TerminalGraph['arcs'][number];
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     ...init,
@@ -65,4 +72,10 @@ export function validateTerminalDocument(
     method: 'POST',
     body: JSON.stringify({ document }),
   });
+}
+
+export function getTerminalGraph(terminalId: string, version: number): Promise<TerminalGraph> {
+  return request(
+    `/terminals/${encodeURIComponent(terminalId)}/graph?version=${encodeURIComponent(version)}`,
+  );
 }

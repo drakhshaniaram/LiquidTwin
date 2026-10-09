@@ -131,3 +131,59 @@ def test_validate_route_returns_engine_issues_for_supplied_document(client: Test
     assert issue["severity"] == "ERROR"
     assert issue["element_id"] == "pipe-1"
     assert issue["fix_hint"] == "Connect the pipe to existing equipment"
+
+
+def test_graph_projection_preserves_parallel_edges_and_directionality(client: TestClient) -> None:
+    graph_document = document()
+    graph_document["nodes"] = [
+        {"id": "jetty-1", "type": "JETTY", "name": "Jetty 1", "x": 20, "y": 40},
+        {"id": "junction-1", "type": "JUNCTION"},
+        {"id": "tank-1", "type": "TANK", "capacity_m3": 5000},
+        {"id": "tank-2", "type": "TANK", "capacity_m3": 5000},
+    ]
+    graph_document["elements"] = [
+        {"id": "line-1", "type": "LINE", "from": "jetty-1", "to": "junction-1", "length_m": 100, "diameter_mm": 300},
+        {"id": "line-2", "type": "LINE", "from": "jetty-1", "to": "junction-1", "length_m": 120, "diameter_mm": 250},
+        {"id": "pump-1", "type": "PUMP", "from": "junction-1", "to": "tank-1", "length_m": 0, "diameter_mm": 300, "head_m": 0},
+    ]
+    created = client.post("/api/v1/terminals", json={"name": "North Terminal", "document": graph_document})
+
+    response = client.get(f"/api/v1/terminals/{created.json()['id']}/graph")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["terminal_version"] == 1
+    assert len(body["nodes"]) == 4
+    assert body["nodes"][0]["x"] == 20
+    parallel = [arc for arc in body["arcs"] if arc["from"] == "jetty-1" and arc["to"] == "junction-1"]
+    assert {arc["element_id"] for arc in parallel} == {"line-1", "line-2"}
+    reverse_pump = next(arc for arc in body["arcs"] if arc["element_id"] == "pump-1" and arc["reversed"])
+    assert reverse_pump["traversable"] is False
+    assert reverse_pump["restriction"] == "ONE_WAY_PUMP"
+
+
+def test_graph_projection_rejects_semantically_invalid_documents(client: TestClient) -> None:
+    invalid_document = document()
+    invalid_document["nodes"] = [{"id": "jetty-1", "type": "JETTY"}]
+    invalid_document["elements"] = [
+        {"id": "line-1", "type": "LINE", "from": "jetty-1", "to": "missing", "length_m": 10, "diameter_mm": 100}
+    ]
+    created = client.post("/api/v1/terminals", json={"name": "North Terminal", "document": invalid_document})
+
+    response = client.get(f"/api/v1/terminals/{created.json()['id']}/graph")
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_TERMINAL_GRAPH"
+    assert any(issue["code"] == "DANGLING_ELEMENT" for issue in response.json()["issues"])
+
+
+def test_graph_projection_returns_topology_with_nonstructural_validation_issues(client: TestClient) -> None:
+    document_with_issue = document()
+    document_with_issue["nodes"] = [{"id": "rail-car-1", "type": "RAIL_CAR"}]
+    created = client.post("/api/v1/terminals", json={"name": "North Terminal", "document": document_with_issue})
+
+    response = client.get(f"/api/v1/terminals/{created.json()['id']}/graph")
+
+    assert response.status_code == 200
+    assert [node["id"] for node in response.json()["nodes"]] == ["rail-car-1"]
+    assert any(issue["code"] == "BAD_PLATFORM" for issue in response.json()["issues"])

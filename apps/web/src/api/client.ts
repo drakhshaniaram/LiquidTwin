@@ -330,6 +330,63 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/terminals/{terminalId}/graph': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        terminalId: components['parameters']['TerminalId'];
+      };
+      cookie?: never;
+    };
+    /** Return the validated directed graph for a terminal version */
+    get: {
+      parameters: {
+        query?: {
+          /** @description Defaults to latest */
+          version?: number;
+        };
+        header?: never;
+        path: {
+          terminalId: components['parameters']['TerminalId'];
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Terminal nodes, elements, and derived directed arcs */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['TerminalGraph'];
+          };
+        };
+        404: components['responses']['NotFound'];
+        /** @description Semantic validation errors prevent an accurate graph projection */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              code: string;
+              message: string;
+              issues: components['schemas']['ValidationIssue'][];
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/terminals/{terminalId}/routes': {
     parameters: {
       query?: never;
@@ -626,6 +683,26 @@ export interface components {
       name: string;
       version: number;
       document: components['schemas']['terminal-document.schema'];
+    };
+    TerminalGraph: {
+      terminal_version: number;
+      nodes: {
+        [key: string]: unknown;
+      }[];
+      elements: {
+        [key: string]: unknown;
+      }[];
+      arcs: {
+        id: string;
+        element_id: string;
+        from: string;
+        to: string;
+        reversed: boolean;
+        traversable: boolean;
+        /** @enum {string|null} */
+        restriction?: 'ONE_WAY_PUMP' | null;
+      }[];
+      issues: components['schemas']['ValidationIssue'][];
     };
     ValidationIssue: {
       /** @enum {string} */
