@@ -3198,20 +3198,19 @@ function TerminalEditor({
         eyebrow="TERMINAL DESIGNER"
         title={name}
         summary={`V${savedVersion} · ${document.nodes.length} equipment · ${document.elements.length} network · ${conceptualLinks.length} links`}
-        action={
-          <button
-            aria-label="Save version"
-            className="primary-action"
-            disabled={save.isPending}
-            title="Save a new version"
-            type="button"
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
-          </button>
-        }
       />
       <div className="designer-toolbar">
+        <button
+          aria-label="Save version"
+          className="toolbar-save-button"
+          disabled={save.isPending}
+          title="Save a new version"
+          type="button"
+          onClick={() => save.mutate()}
+        >
+          {save.isPending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
+        </button>
+        <span className="toolbar-divider" aria-hidden="true" />
         <div className="design-actions" role="group" aria-label="Edit actions">
           <button
             aria-label="Undo"
