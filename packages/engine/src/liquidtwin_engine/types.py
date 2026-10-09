@@ -17,6 +17,11 @@ class ExclusionReason(str, Enum):
     ENDPOINT_SPACE = "ENDPOINT_SPACE"
     ENDPOINT_PRODUCT = "ENDPOINT_PRODUCT"
     ENDPOINT_DIRECTION = "ENDPOINT_DIRECTION"
+    INVALID_PUMP_CURVE = "INVALID_PUMP_CURVE"
+    PUMP_FLOW_OUT_OF_RANGE = "PUMP_FLOW_OUT_OF_RANGE"
+    NO_PUMP_SYSTEM_INTERSECTION = "NO_PUMP_SYSTEM_INTERSECTION"
+    PUMP_SPEED_OUT_OF_RANGE = "PUMP_SPEED_OUT_OF_RANGE"
+    PUMP_SUCTION_MARGIN = "PUMP_SUCTION_MARGIN"
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,11 @@ class RouteMetrics:
     common_headers: int
     head_margin_m: float
     max_velocity_ms: float
+    operating_flow_m3h: float | None = None
+    pump_head_m: float | None = None
+    system_head_m: float | None = None
+    suction_margin_m: float | None = None
+    pump_speed_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +94,7 @@ class RouteRequest:
     destination_ids: tuple[str, ...]
     window_to_min: float | None = None
     max_routes: int = 5
+    pump_suction_inputs: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)

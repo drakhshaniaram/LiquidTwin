@@ -16,8 +16,13 @@ Lift: `dz` (m), sign flipped on reverse traversal. Required head `H_req = h_f + 
 The reference uses fixed `f` per product and `g = 9.81` (code constant 19.62 = 2g) and stores heads in decimetres (`10 x m`) for integer CP-SAT use.
 
 ## Pump model
-- MVP: constant head `H_p` (as reference).
-- Phase 4: curve `H(Q) = H0 - a Q^2` (or tabulated), operating point found by intersecting with system curve; NPSH check; multi-pump parallel/series; VFD range.
+- Schema 1.0 and pumps without `performance_curve`: constant head `H_p` (as reference).
+- Schema 1.1 curve pumps: quadratic `H(Q) = H0 - a Q^2` or ordered tabular points evaluated by piecewise-linear interpolation. Curves are never extrapolated beyond their declared flow range.
+- Operating flow is the highest in-range pump/system intersection that meets the requested minimum rate. Transfer duration uses this achieved flow.
+- A route request supplies available NPSH for every curve pump. The route is rejected unless `NPSHa >= NPSHr + configured margin` for each member.
+- Series trains add member head at shared flow; parallel trains add member flow at shared head. Declared VFD ranges use affinity scaling (`Q ∝ speed`, `H ∝ speed²`); the solver selects the lowest common permitted speed that meets the route requirement.
+- Curve routes report achieved flow, pump/system head, head margin, suction margin, and selected speed ratio. Exclusions identify invalid curves, flow/speed limits, missing operating points, and suction-margin failures.
+- The feature-001 schema 1.0 reference suite remains unchanged and is the compatibility gate for constant-head routes.
 
 ## Route feasibility
 $$\sum_{pumps} H_p - \sum_{arcs} H_{req} \ge 0$$

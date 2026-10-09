@@ -9,7 +9,7 @@ from typing import Any
 from .types import ValidationIssue
 from .validation import validate_document
 
-NUM, INT, BOOL, STR, LIST = "num", "int", "bool", "str", "list"
+NUM, INT, BOOL, STR, LIST, NUM_LIST = "num", "int", "bool", "str", "list", "numlist"
 
 PRODUCTS = {"id": STR, "name": STR, "group": STR, "friction_factor": NUM, "max_velocity": NUM, "color": STR}
 CHANGEOVER = {"from_product": STR, "to_product": STR, "gap_min": NUM, "flush_factor": NUM,
@@ -23,7 +23,13 @@ TANKS = {"node_id": STR, "group_id": STR, "product_id": STR, "stock_m3": NUM, "c
 ELEMENTS = {"id": STR, "type": STR, "from": STR, "to": STR, "length_m": NUM, "diameter_mm": NUM,
             "elevation_delta_m": NUM, "installation": STR, "roughness_mm": NUM, "certified_products": LIST,
             "dedicated_group_id": STR, "dedicated_product_ids": LIST, "residue_product_id": STR, "bidirectional": BOOL,
-            "tank_id": STR, "head_m": NUM, "max_flow_m3h": NUM, "operate_min": NUM, "state": STR}
+            "tank_id": STR, "head_m": NUM, "max_flow_m3h": NUM, "operate_min": NUM, "state": STR,
+            "curve_model": STR, "curve_min_flow_m3h": NUM, "curve_max_flow_m3h": NUM,
+            "curve_shutoff_head_m": NUM, "curve_quadratic_coefficient": NUM, "curve_flow_points": NUM_LIST,
+            "curve_head_points": NUM_LIST, "speed_ratio_min": NUM, "speed_ratio_max": NUM,
+            "npsh_required_m": NUM, "npsh_margin_m": NUM}
+PUMP_TRAINS = {"id": STR, "arrangement": STR, "member_pump_ids": LIST}
+TERMINAL_META = {"schema_version": STR}
 AVAIL = {"element_id": STR, "status": STR, "from": STR, "to": STR, "reason": STR, "source": STR, "external_ref": STR}
 REQUIRED = {"products.csv": ("id", "name"), "nodes.csv": ("id", "type"), "elements.csv": ("id", "type", "from", "to")}
 
@@ -53,6 +59,8 @@ def _convert(raw: str, kind: str) -> Any:
         return raw.lower() == "true"
     if kind == LIST:
         return [p for p in (x.strip() for x in raw.split(";")) if p]
+    if kind == NUM_LIST:
+        return [float(value.strip()) for value in raw.split(";") if value.strip()]
     return raw
 
 
@@ -91,13 +99,17 @@ def _read(files: dict[str, str], name: str, spec: dict[str, str], issues: list[V
 
 def import_csv_bundle(files: dict[str, str], name: str) -> CsvImportResult:
     issues: list[ValidationIssue] = []
+    terminal_rows = _read(files, "terminal.csv", TERMINAL_META, issues, False)
     products = [r for _, r in _read(files, "products.csv", PRODUCTS, issues, True)]
     changeover = [r for _, r in _read(files, "changeover.csv", CHANGEOVER, issues, False)]
     groups = [r for _, r in _read(files, "groups.csv", GROUPS, issues, False)]
     node_rows = _read(files, "nodes.csv", NODES, issues, True)
     tank_rows = _read(files, "tanks.csv", TANKS, issues, False)
     element_rows = _read(files, "elements.csv", ELEMENTS, issues, True)
+    pump_trains = [r for _, r in _read(files, "pump_trains.csv", PUMP_TRAINS, issues, False)]
     avail = [r for _, r in _read(files, "availability.csv", AVAIL, issues, False)]
+    if len(terminal_rows) > 1:
+        _err(issues, "terminal.csv", 3, "TOO_MANY_ROWS", "terminal.csv must contain exactly one data row")
 
     nodes = {r["id"]: dict(r) for _, r in node_rows if "id" in r}
     group_members: dict[str, list[str]] = {}
@@ -117,8 +129,43 @@ def import_csv_bundle(files: dict[str, str], name: str) -> CsvImportResult:
     if any(i.severity == "ERROR" for i in issues):
         return CsvImportResult(None, avail, issues)
     doc: dict[str, Any] = {
-        "schema_version": "1.0", "name": name, "products": products, "changeover": changeover,
+        "schema_version": (terminal_rows[0][1].get("schema_version") if terminal_rows else None) or "1.0",
+        "name": name, "products": products, "changeover": changeover,
         "tank_groups": group_docs, "nodes": list(nodes.values()), "elements": [r for _, r in element_rows]}
+    if pump_trains:
+        doc["pump_trains"] = pump_trains
+    for element in doc["elements"]:
+        model = element.pop("curve_model", None)
+        if model:
+            element["performance_curve"] = {
+                "model": model,
+                "min_flow_m3h": element.pop("curve_min_flow_m3h", None),
+                "max_flow_m3h": element.pop("curve_max_flow_m3h", None),
+                "speed_ratio_min": element.pop("speed_ratio_min", None),
+                "speed_ratio_max": element.pop("speed_ratio_max", None),
+            }
+            curve = element["performance_curve"]
+            if model == "QUADRATIC":
+                curve["shutoff_head_m"] = element.pop("curve_shutoff_head_m", None)
+                curve["quadratic_coefficient"] = element.pop("curve_quadratic_coefficient", None)
+            else:
+                flows = element.pop("curve_flow_points", [])
+                heads = element.pop("curve_head_points", [])
+                if len(flows) != len(heads):
+                    _err(issues, "elements.csv", None, "BAD_PUMP_CURVE", f"Curve flow/head point counts differ for {element['id']}")
+                curve["points"] = [
+                    {"flow_m3h": flow, "head_m": head}
+                    for flow, head in zip(flows, heads)
+                ]
+        else:
+            for column in (
+                "curve_min_flow_m3h", "curve_max_flow_m3h", "curve_shutoff_head_m",
+                "curve_quadratic_coefficient", "curve_flow_points", "curve_head_points",
+                "speed_ratio_min", "speed_ratio_max",
+            ):
+                element.pop(column, None)
+    if any(i.severity == "ERROR" for i in issues):
+        return CsvImportResult(None, avail, issues)
     sem = validate_document(doc)
     issues.extend(sem)
     if any(i.severity == "ERROR" for i in issues):

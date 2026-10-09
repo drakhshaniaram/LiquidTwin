@@ -17,9 +17,9 @@ def _issue(sev: str, code: str, msg: str, hint: str = "", **kw: Any) -> Validati
 def validate_document(data: dict[str, Any]) -> list[ValidationIssue]:
     try:
         TerminalDocument.model_validate(data)
-    except ValidationError as e:
+    except ValidationError as error:
         return [_issue("ERROR", "SCHEMA", f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}",
-                       "Fix the value to match the terminal schema") for err in e.errors()]
+                       "Fix the value to match the terminal schema") for err in error.errors()]
     issues: list[ValidationIssue] = []
     products = {p["id"] for p in data["products"]}
     nodes = {n["id"]: n for n in data["nodes"]}
@@ -57,6 +57,7 @@ def validate_document(data: dict[str, Any]) -> list[ValidationIssue]:
 
     touched: set[str] = set()
     header_tanks: Counter[str] = Counter()
+    pump_ids = {element["id"] for element in data["elements"] if element["type"] == "PUMP"}
     for e in data["elements"]:
         eid = e["id"]
         for end in ("from", "to"):
@@ -74,6 +75,45 @@ def validate_document(data: dict[str, Any]) -> list[ValidationIssue]:
         if res and res not in products:
             issues.append(_issue("ERROR", "UNKNOWN_PRODUCT", f"Element {eid} residue references unknown product {res}", "",
                                  element_id=eid))
+        curve = e.get("performance_curve")
+        if curve is not None:
+            if e["type"] != "PUMP":
+                issues.append(_issue("ERROR", "INVALID_PUMP_CURVE", f"Element {eid} defines a pump curve but is not a PUMP",
+                                     "Move the performance curve to a PUMP element", element_id=eid))
+            else:
+                min_flow = curve.get("min_flow_m3h")
+                max_flow = curve.get("max_flow_m3h")
+                speed_min = curve.get("speed_ratio_min")
+                speed_max = curve.get("speed_ratio_max")
+                invalid_curve = (
+                    min_flow is None
+                    or max_flow is None
+                    or min_flow >= max_flow
+                    or speed_min is None
+                    or speed_max is None
+                    or speed_min > speed_max
+                )
+                if curve.get("model") == "QUADRATIC":
+                    invalid_curve = invalid_curve or curve.get("shutoff_head_m") is None or curve.get("quadratic_coefficient") is None
+                elif curve.get("model") == "TABULAR":
+                    points = curve.get("points") or []
+                    invalid_curve = invalid_curve or len(points) < 2
+                    if len(points) >= 2:
+                        flows = [point["flow_m3h"] for point in points]
+                        heads = [point["head_m"] for point in points]
+                        invalid_curve = invalid_curve or any(
+                            current <= previous for previous, current in zip(flows, flows[1:])
+                        )
+                        invalid_curve = invalid_curve or any(
+                            current > previous for previous, current in zip(heads, heads[1:])
+                        )
+                        invalid_curve = invalid_curve or flows[0] > min_flow or flows[-1] < max_flow
+                if invalid_curve:
+                    issues.append(_issue("ERROR", "INVALID_PUMP_CURVE", f"Pump {eid} has an invalid performance curve or operating range",
+                                         "Check curve points, flow bounds, and speed ratio limits", element_id=eid))
+            if e.get("npsh_required_m") is None:
+                issues.append(_issue("ERROR", "INVALID_PUMP_CURVE", f"Pump {eid} has a curve but no required suction head",
+                                     "Set npsh_required_m for curve-based pumps", element_id=eid))
         if e["type"] in ("TANK_HEADER", "SEGMENT"):
             tid = e.get("tank_id")
             if tid not in nodes or nodes[tid]["type"] != "TANK":
@@ -81,6 +121,21 @@ def validate_document(data: dict[str, Any]) -> list[ValidationIssue]:
                                      "Set tank_id to a tank node", element_id=eid))
             elif e["type"] == "TANK_HEADER":
                 header_tanks[tid] += 1
+    assigned_pumps: set[str] = set()
+    for train in data.get("pump_trains") or []:
+        train_id = train["id"]
+        members = train["member_pump_ids"]
+        if len(members) < 2:
+            issues.append(_issue("ERROR", "BAD_PUMP_TRAIN", f"Pump train {train_id} must contain at least two pumps",
+                                 "Add another pump or remove the train", element_id=train_id))
+        for pump_id in members:
+            if pump_id not in pump_ids:
+                issues.append(_issue("ERROR", "BAD_PUMP_TRAIN", f"Pump train {train_id} references non-pump element {pump_id}",
+                                     "Reference existing PUMP element IDs", element_id=pump_id))
+            if pump_id in assigned_pumps:
+                issues.append(_issue("ERROR", "BAD_PUMP_TRAIN", f"Pump {pump_id} belongs to more than one train",
+                                     "Assign each pump to at most one train", element_id=pump_id))
+            assigned_pumps.add(pump_id)
     for n in data["nodes"]:
         if n["id"] not in touched and n["type"] != "RAIL_CAR":
             issues.append(_issue("WARNING", "ISOLATED_NODE", f"Node {n['id']} has no connected pipes",

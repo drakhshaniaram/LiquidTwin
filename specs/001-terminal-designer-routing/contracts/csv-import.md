@@ -4,6 +4,9 @@ A bundle is a set of UTF-8 CSV files (comma separated, header row required, `.` 
 
 Lists inside a cell use `;` as separator (for example `P1;P2`). Booleans are `true` or `false`.
 
+## terminal.csv (optional metadata)
+`schema_version` records the terminal document version. If omitted by a legacy bundle, import defaults to `1.0`. Export always writes this file so schema 1.1 data is not silently downgraded.
+
 ## products.csv (required)
 | column | required | notes |
 |---|---|---|
@@ -46,7 +49,14 @@ Lists inside a cell use `;` as separator (for example `P1;P2`). Booleans are `tr
 | bidirectional | default true; PUMP is always one-way |
 | tank_id | required for TANK_HEADER and SEGMENT |
 | head_m, max_flow_m3h | PUMP |
+| curve_model, curve_min_flow_m3h, curve_max_flow_m3h | Optional schema 1.1 pump curve metadata |
+| curve_shutoff_head_m, curve_quadratic_coefficient | Quadratic pump curve parameters |
+| curve_flow_points, curve_head_points | Tabular curve samples; numeric lists separated by `;` and equal in length |
+| speed_ratio_min, speed_ratio_max, npsh_required_m, npsh_margin_m | Optional VFD and suction requirement data |
 | operate_min, state | VALVE |
+
+## pump_trains.csv (optional, schema 1.1)
+`id, arrangement, member_pump_ids`; arrangement is `SERIES` or `PARALLEL`, and member IDs are `;`-separated PUMP element IDs.
 
 ## availability.csv (optional)
 `element_id, status, from, to, reason, source, external_ref` with ISO-8601 timestamps; imported as availability windows, not as part of the document.
@@ -57,3 +67,4 @@ Lists inside a cell use `;` as separator (for example `P1;P2`). Booleans are `tr
 - Numbers outside schema ranges are rejected with the row number.
 - A CSV bundle and JSON file describing the same terminal MUST produce identical TerminalDocuments (order-normalized by id); this is a contract test.
 - Export to CSV produces the same file set and round-trips.
+- Schema 1.0 bundles without `terminal.csv`, curve columns, or `pump_trains.csv` remain valid; curve-mode bundles preserve all schema 1.1 pump/train fields.

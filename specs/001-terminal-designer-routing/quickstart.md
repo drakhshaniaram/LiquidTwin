@@ -23,6 +23,15 @@ Run these after implementation to prove the feature end to end. Interfaces: [con
 | `npx playwright test` (desktop + Pixel 5 viewport) | Stories 1 to 4 flows, touch pan/zoom |
 | `pytest tests/perf -m benchmark` | route < 1 s and graph build < 200 ms on the 500-tank terminal (SC-003) |
 
+## Graph Projection Checks
+1. Open a saved terminal in the designer and select **Graph**. Confirm the view reports the selected saved version and displays the node/element/arc counts; arrows show allowed directions and a crossed marker identifies a blocked reverse pump arc.
+2. Request `GET /api/v1/terminals/{id}/graph?version=N`. Confirm `nodes` and `elements` match that saved document version, parallel elements remain distinct, and each directed `arc` contains its source element ID and endpoints.
+3. Confirm a reverse pump arc is returned with `traversable: false` and `restriction: ONE_WAY_PUMP`; non-structural validation issues remain in `issues`. A schema error, duplicate ID, dangling element, or self-loop must return HTTP 422.
+4. Run `python -m pytest services/api/tests/test_terminals_api.py -k graph` and `python -m pytest packages/engine/tests/test_graph.py packages/engine/tests/test_routing.py` to verify the API projection and the shared graph-to-k-shortest-path behavior.
+
+## Performance Gate Status
+The current editor renderer is SVG. SC-007 has not been demonstrated on a Pixel 5-class device, and the repository does not yet contain a 500-tank/5,000-pipe fixture generator. Do not treat the small sample graph as performance evidence. Before release, add the large fixture, migrate the production renderer to PixiJS as planned, and record route/graph timings and frame rate.
+
 ## Manual scenarios
 1. **Import (Story 1)**: Import `tests/reference/sample-terminal.json`, then the CSV bundle in `tests/reference/csv/`. Expect identical terminals and no ERROR validation issues.
 2. **Route (Story 2)**: Request product P1, volume 4000, rate 1000 from Jetty1 (node 1) to tank node 7 or 9. Expect the reference route highlighted with metrics; alternatives ranked below.

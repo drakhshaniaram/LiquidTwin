@@ -49,17 +49,33 @@ export type Element = {
   tank_id?: Id;
   head_m?: number;
   max_flow_m3h?: number;
+  performance_curve?: PerformanceCurve;
+  npsh_required_m?: number;
+  npsh_margin_m?: number;
   operate_min?: number;
   state?: 'OPEN' | 'CLOSED';
   [k: string]: unknown;
 };
+export type PerformanceCurve = {
+  [k: string]: unknown;
+} & {
+  model: 'QUADRATIC' | 'TABULAR';
+  min_flow_m3h: number;
+  max_flow_m3h: number;
+  shutoff_head_m?: number;
+  quadratic_coefficient?: number;
+  points?: PerformancePoint[];
+  speed_ratio_min: number;
+  speed_ratio_max: number;
+};
 
 export interface TerminalDocument {
-  schema_version: '1.0';
+  schema_version: '1.0' | '1.1';
   name: string;
   products: Product[];
   changeover?: ChangeoverRule[];
   tank_groups?: TankGroup[];
+  pump_trains?: PumpTrain[];
   nodes: Node[];
   elements: Element[];
   /**
@@ -88,4 +104,13 @@ export interface TankGroup {
   id: Id;
   name: string;
   tank_ids?: Id[];
+}
+export interface PumpTrain {
+  id: Id;
+  arrangement: 'SERIES' | 'PARALLEL';
+  member_pump_ids: Id[];
+}
+export interface PerformancePoint {
+  flow_m3h: number;
+  head_m: number;
 }

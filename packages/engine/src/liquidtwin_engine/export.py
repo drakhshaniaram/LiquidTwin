@@ -32,6 +32,7 @@ def to_csv_bundle(doc: dict[str, Any]) -> dict[str, str]:
         return buf.getvalue()
 
     files: dict[str, str] = {}
+    files["terminal.csv"] = write(["schema_version"], [[doc.get("schema_version", "1.0")]])
     files["products.csv"] = write(
         ["id", "name", "group", "friction_factor", "max_velocity", "color"],
         [[p["id"], p["name"], _v(p.get("group")), _v(p.get("friction_factor")), _v(p.get("max_velocity")),
@@ -54,7 +55,36 @@ def to_csv_bundle(doc: dict[str, Any]) -> dict[str, str]:
                "certified_products", "dedicated_group_id", "dedicated_product_ids", "residue_product_id",
                "bidirectional", "tank_id", "head_m", "max_flow_m3h", "operate_min", "state"]
     lists, bools = {"certified_products", "dedicated_product_ids"}, {"bidirectional"}
-    files["elements.csv"] = write(el_cols, [
-        [_l(e.get(c)) if c in lists else _b(e.get(c)) if c in bools else _v(e.get(c)) for c in el_cols]
-        for e in doc["elements"]])
+    curve_cols = [
+        "curve_model", "curve_min_flow_m3h", "curve_max_flow_m3h", "curve_shutoff_head_m",
+        "curve_quadratic_coefficient", "curve_flow_points", "curve_head_points",
+        "speed_ratio_min", "speed_ratio_max", "npsh_required_m", "npsh_margin_m",
+    ]
+    rows = []
+    for element in doc["elements"]:
+        curve = element.get("performance_curve") or {}
+        base = [
+            _l(element.get(column)) if column in lists else _b(element.get(column)) if column in bools else _v(element.get(column))
+            for column in el_cols
+        ]
+        points = curve.get("points") or []
+        curve_values = [
+            _v(curve.get("model")),
+            _v(curve.get("min_flow_m3h")),
+            _v(curve.get("max_flow_m3h")),
+            _v(curve.get("shutoff_head_m")),
+            _v(curve.get("quadratic_coefficient")),
+            _l([_v(point.get("flow_m3h")) for point in points]),
+            _l([_v(point.get("head_m")) for point in points]),
+            _v(curve.get("speed_ratio_min")),
+            _v(curve.get("speed_ratio_max")),
+            _v(element.get("npsh_required_m")),
+            _v(element.get("npsh_margin_m")),
+        ]
+        rows.append(base + curve_values)
+    files["elements.csv"] = write([*el_cols, *curve_cols], rows)
+    files["pump_trains.csv"] = write(
+        ["id", "arrangement", "member_pump_ids"],
+        [[train["id"], train["arrangement"], _l(train.get("member_pump_ids"))] for train in doc.get("pump_trains") or []],
+    )
     return files

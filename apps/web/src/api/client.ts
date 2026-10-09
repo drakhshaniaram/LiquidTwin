@@ -230,7 +230,7 @@ export interface paths {
             [name: string]: unknown;
           };
           content: {
-            'application/json': components['schemas']['TerminalSummary'];
+            'application/json': components['schemas']['ImportResponse'];
           };
         };
         422: components['responses']['ValidationFailed'];
@@ -270,7 +270,10 @@ export interface paths {
           headers: {
             [name: string]: unknown;
           };
-          content?: never;
+          content: {
+            'application/json': components['schemas']['terminal-document.schema'];
+            'application/zip': string;
+          };
         };
       };
     };
@@ -421,6 +424,98 @@ export interface paths {
           };
           content: {
             'application/json': components['schemas']['RouteResponse'];
+          };
+        };
+        404: components['responses']['NotFound'];
+        422: components['responses']['ValidationFailed'];
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/terminals/{terminalId}/optimization/prepare': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        terminalId: components['parameters']['TerminalId'];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Prepare Stage 1 route candidates for an optimization scenario */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          terminalId: components['parameters']['TerminalId'];
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': components['schemas']['OptimizationScenario'];
+        };
+      };
+      responses: {
+        /** @description Candidate routes and blockers for every submitted job */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['OptimizationPreparation'];
+          };
+        };
+        404: components['responses']['NotFound'];
+        422: components['responses']['ValidationFailed'];
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/terminals/{terminalId}/optimize': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        terminalId: components['parameters']['TerminalId'];
+      };
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Optimize a prepared multi-job scenario */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          terminalId: components['parameters']['TerminalId'];
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': components['schemas']['OptimizationScenario'];
+        };
+      };
+      responses: {
+        /** @description Solver status, selected routes, KPIs, and timeline */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['OptimizationResult'];
           };
         };
         404: components['responses']['NotFound'];
@@ -657,6 +752,9 @@ export interface components {
       /** Format: date-time */
       updated_at: string;
     };
+    ImportResponse: components['schemas']['TerminalSummary'] & {
+      issues: components['schemas']['ValidationIssue'][];
+    };
     CreateTerminal: {
       name: string;
       document: components['schemas']['terminal-document.schema'];
@@ -753,6 +851,105 @@ export interface components {
       destination_ids: string[];
       /** @default 5 */
       max_routes: number;
+      pump_suction_inputs?: {
+        pump_id: string;
+        npsh_available_m: number;
+      }[];
+    };
+    OptimizationJob: {
+      id: string;
+      /** @enum {string} */
+      direction: 'IN' | 'OUT' | 'TRANSFER';
+      product_id: string;
+      source_ids: string[];
+      destination_ids: string[];
+      volume_m3: number;
+      rate_m3h: number;
+      earliest_start_min: number;
+      due_min: number;
+      pump_suction_inputs?: {
+        pump_id: string;
+        npsh_available_m: number;
+      }[];
+    };
+    OptimizationScenario: {
+      terminal_version: number;
+      /** Format: date-time */
+      horizon_start: string;
+      /** @default 1000 */
+      horizon_minutes: number;
+      jobs: components['schemas']['OptimizationJob'][];
+      objective_weights?: components['schemas']['ObjectiveWeights'];
+      /** @default 30 */
+      time_limit_seconds: number;
+      /** @default 1 */
+      random_seed: number;
+    };
+    ObjectiveWeights: {
+      /** @default 1 */
+      waiting: number;
+      /** @default 20 */
+      lateness: number;
+      /** @default 1 */
+      flush_volume: number;
+      /** @default 2 */
+      valves: number;
+      /** @default 3 */
+      shared_headers: number;
+    };
+    PreparedOptimizationJob: {
+      job_id: string;
+      routes: components['schemas']['Route'][];
+      blockers: components['schemas']['Exclusion'][];
+    };
+    OptimizationPreparation: {
+      terminal_version: number;
+      /** Format: date-time */
+      horizon_start: string;
+      horizon_minutes: number;
+      engine_version: string;
+      jobs: components['schemas']['PreparedOptimizationJob'][];
+    };
+    OptimizedJob: {
+      job_id: string;
+      start_min: number;
+      end_min: number;
+      late_min: number;
+      route: components['schemas']['Route'];
+    };
+    UnscheduledJob: {
+      job_id: string;
+      detail: string;
+      blockers: components['schemas']['Exclusion'][];
+      conflict_elements: string[];
+    };
+    ElementUseInterval: {
+      element_id: string;
+      job_id: string;
+      product_id: string;
+      start_min: number;
+      end_min: number;
+    };
+    OptimizationKpis: {
+      on_time_jobs: number;
+      total_lateness_min: number;
+      waiting_min: number;
+      flush_volume_m3: number;
+      makespan_min: number;
+    };
+    OptimizationResult: {
+      terminal_version: number;
+      engine_version: string;
+      solver_version: string;
+      /** @enum {string} */
+      status: 'OPTIMAL' | 'FEASIBLE' | 'INFEASIBLE' | 'NO_ROUTE' | 'UNKNOWN';
+      detail: string;
+      objective?: number | null;
+      best_bound?: number | null;
+      scheduled_jobs: components['schemas']['OptimizedJob'][];
+      unscheduled_jobs: components['schemas']['UnscheduledJob'][];
+      kpis: components['schemas']['OptimizationKpis'];
+      element_timeline: components['schemas']['ElementUseInterval'][];
     };
     RouteResponse: {
       terminal_version: number;
@@ -781,6 +978,11 @@ export interface components {
         common_headers: number;
         head_margin_m: number;
         max_velocity_ms: number;
+        operating_flow_m3h?: number | null;
+        pump_head_m?: number | null;
+        system_head_m?: number | null;
+        suction_margin_m?: number | null;
+        pump_speed_ratio?: number | null;
       };
     };
     Exclusion: {
@@ -798,7 +1000,12 @@ export interface components {
         | 'ENDPOINT_STOCK'
         | 'ENDPOINT_SPACE'
         | 'ENDPOINT_PRODUCT'
-        | 'ENDPOINT_DIRECTION';
+        | 'ENDPOINT_DIRECTION'
+        | 'INVALID_PUMP_CURVE'
+        | 'PUMP_FLOW_OUT_OF_RANGE'
+        | 'NO_PUMP_SYSTEM_INTERSECTION'
+        | 'PUMP_SPEED_OUT_OF_RANGE'
+        | 'PUMP_SUCTION_MARGIN';
       detail: string;
     };
     ConfirmedRoute: {
@@ -817,6 +1024,21 @@ export interface components {
       blockers: components['schemas']['Exclusion'][];
     };
     Id: string;
+    PerformancePoint: {
+      flow_m3h: number;
+      head_m: number;
+    };
+    PerformanceCurve: {
+      /** @enum {unknown} */
+      model: 'QUADRATIC' | 'TABULAR';
+      min_flow_m3h: number;
+      max_flow_m3h: number;
+      shutoff_head_m?: number;
+      quadratic_coefficient?: number;
+      points?: components['schemas']['PerformancePoint'][];
+      speed_ratio_min: number;
+      speed_ratio_max: number;
+    } & (unknown & unknown);
     Product: {
       id: components['schemas']['Id'];
       name: string;
@@ -841,6 +1063,12 @@ export interface components {
       id: components['schemas']['Id'];
       name: string;
       tank_ids?: components['schemas']['Id'][];
+    };
+    PumpTrain: {
+      id: components['schemas']['Id'];
+      /** @enum {unknown} */
+      arrangement: 'SERIES' | 'PARALLEL';
+      member_pump_ids: components['schemas']['Id'][];
     };
     Node: {
       id: components['schemas']['Id'];
@@ -892,18 +1120,23 @@ export interface components {
       tank_id?: components['schemas']['Id'];
       head_m?: number;
       max_flow_m3h?: number;
+      performance_curve?: components['schemas']['PerformanceCurve'];
+      npsh_required_m?: number;
+      /** @default 0.5 */
+      npsh_margin_m: number;
       operate_min?: number;
       /** @enum {unknown} */
       state?: 'OPEN' | 'CLOSED';
     } & (unknown & unknown & unknown);
     /** TerminalDocument */
     'terminal-document.schema': {
-      /** @constant */
-      schema_version: '1.0';
+      /** @enum {unknown} */
+      schema_version: '1.0' | '1.1';
       name: string;
       products: components['schemas']['Product'][];
       changeover?: components['schemas']['ChangeoverRule'][];
       tank_groups?: components['schemas']['TankGroup'][];
+      pump_trains?: components['schemas']['PumpTrain'][];
       nodes: components['schemas']['Node'][];
       elements: components['schemas']['Element'][];
       /** @description Optional editor-only data; ignored by engines */
@@ -936,6 +1169,27 @@ export interface components {
           id: components['schemas']['Id'];
           name: string;
           tank_ids?: components['schemas']['Id'][];
+        };
+        PerformancePoint: {
+          flow_m3h: number;
+          head_m: number;
+        };
+        PerformanceCurve: {
+          /** @enum {unknown} */
+          model: 'QUADRATIC' | 'TABULAR';
+          min_flow_m3h: number;
+          max_flow_m3h: number;
+          shutoff_head_m?: number;
+          quadratic_coefficient?: number;
+          points?: components['schemas']['PerformancePoint'][];
+          speed_ratio_min: number;
+          speed_ratio_max: number;
+        } & (unknown & unknown);
+        PumpTrain: {
+          id: components['schemas']['Id'];
+          /** @enum {unknown} */
+          arrangement: 'SERIES' | 'PARALLEL';
+          member_pump_ids: components['schemas']['Id'][];
         };
         Node: {
           id: components['schemas']['Id'];
@@ -993,6 +1247,10 @@ export interface components {
           tank_id?: components['schemas']['Id'];
           head_m?: number;
           max_flow_m3h?: number;
+          performance_curve?: components['schemas']['PerformanceCurve'];
+          npsh_required_m?: number;
+          /** @default 0.5 */
+          npsh_margin_m: number;
           operate_min?: number;
           /** @enum {unknown} */
           state?: 'OPEN' | 'CLOSED';

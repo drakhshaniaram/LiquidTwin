@@ -1,0 +1,241 @@
+/* Apple-style presentation layer; consumes tokens from themes.css. */
+body {
+  background: var(--surface-1);
+  color: var(--brand-strong);
+}
+
+.topbar {
+  height: 52px;
+  color: var(--brand-strong);
+  background: var(--glass);
+  border-bottom: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+.sidebar-toggle {
+  color: var(--text-2);
+}
+
+.sidebar-toggle:hover {
+  background: var(--brand-wash);
+}
+
+.brand-copy strong {
+  color: var(--brand);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.brand-copy small {
+  color: var(--text-3);
+  font-family: var(--font-text);
+  font-size: 10px;
+}
+
+.topbar-state {
+  color: var(--text-2);
+  font-family: var(--font-text);
+  font-size: 12px;
+}
+
+.active-terminal {
+  border-left-color: var(--line-strong);
+}
+
+.workspace-layout {
+  height: calc(100vh - 52px);
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.designer-app .workspace-layout {
+  height: calc(100dvh - 52px);
+}
+
+.sidebar {
+  padding: 14px 12px;
+  border-right: 1px solid var(--glass-border);
+  background: var(--glass);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+.sidebar-label,
+.eyebrow,
+.content-ruler,
+.register-head,
+.register-foot,
+.module-index span {
+  font-family: var(--font-text);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sidebar-label {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.nav-link {
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.nav-link:hover {
+  background: var(--surface-2);
+  color: var(--brand-strong);
+}
+
+.nav-link.is-active {
+  background: var(--brand);
+  color: #fff;
+}
+
+.nav-link.is-active::before {
+  display: none;
+}
+
+.nav-link.is-active svg {
+  color: #fff;
+}
+
+.sidebar-footer {
+  color: var(--text-3);
+  font-family: var(--font-text);
+  font-size: 11px;
+}
+
+.footer-mark {
+  background: var(--good);
+}
+
+.page-heading {
+  min-height: 0;
+  padding: 36px 0 20px;
+  border-bottom: 0;
+}
+
+.page-heading h1 {
+  color: var(--brand-strong);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.eyebrow {
+  color: var(--brand-tint);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.page-summary {
+  font-size: 15px;
+}
+
+.compact-heading {
+  border-bottom: 1px solid var(--line);
+}
+
+.content-ruler {
+  display: none;
+}
+
+.primary-action,
+.tool-button {
+  min-height: 36px;
+  padding: 0 16px;
+  border-color: var(--brand);
+  border-radius: 999px;
+  background: var(--brand);
+  box-shadow: var(--shadow-sm);
+  transition:
+    background-color 140ms ease,
+    transform 140ms ease;
+}
+
+.primary-action:hover:not(:disabled),
+.tool-button:hover {
+  background: var(--brand-tint);
+}
+
+.primary-action:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.secondary-action {
+  min-height: 36px;
+  padding: 0 16px;
+  border-color: var(--line-strong);
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--canvas);
+}
+
+.secondary-action:hover {
+  border-color: var(--brand-tint);
+  background: var(--brand-wash);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+  border-radius: var(--radius-sm);
+}
+
+.create-terminal,
+.register,
+.property-panel,
+.object-popover,
+.validation-tray {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--canvas);
+  box-shadow: var(--shadow-sm);
+}
+
+.create-terminal {
+  border-left: 1px solid var(--line);
+}
+
+.register {
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+}
+
+.object-popover {
+  box-shadow: var(--shadow-md);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+.palette-button {
+  border-radius: var(--radius-md);
+}
+
+.terminal-canvas {
+  background: var(--canvas);
+}
+
+@media (max-width: 760px) {
+  .workspace-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-heading h1 {
+    font-size: 28px;
+  }
+}

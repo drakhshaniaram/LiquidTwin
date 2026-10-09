@@ -3,9 +3,10 @@
 All Technical Context items are resolved; no NEEDS CLARIFICATION remain.
 
 ## R1. Rendering technology
-- **Decision**: PixiJS v8 (2D WebGL) for the designer and route overlay; three.js deferred to the optional 3D/simulation feature.
-- **Rationale**: Schematic terminal views are 2D. Pixi handles tens of thousands of sprites and lines with touch support and smooth animation. SVG/DOM libraries (React Flow) slow down beyond about 1-2k elements, below the 5,000-pipe target.
-- **Alternatives**: React Flow / SVG (too slow at scale); Canvas 2D (no batching, weaker animation); three.js (3D overhead and UX not needed for schematics); Konva (adequate to ~5k objects, smaller ecosystem for LOD and shaders).
+- **Decision**: PixiJS v8 (2D WebGL) remains the production renderer target under the constitution; the current designer and graph view use React-rendered SVG as an interim implementation. Three.js remains deferred to the optional 3D/simulation feature.
+- **Rationale**: The SVG implementation established the editing and graph interactions with a small surface area, but it has not been shown to meet the 500-tank/5,000-pipe or Pixel 5-class 30 fps budgets. No benchmark result is available, so performance must not be inferred from the current small sample.
+- **Alternatives**: Retain SVG only if it is explicitly accepted by a constitution amendment and measured against all budgets; Canvas 2D (no batching, weaker animation); three.js (3D overhead and UX not needed for schematics); Konva (alternative 2D scene graph, not selected).
+- **Release gate**: Migrate to PixiJS and validate SC-007, or amend the constitution through governance before treating another renderer as production-approved.
 
 ## R2. Backend language and framework
 - **Decision**: Python 3.12 with FastAPI and Pydantic v2.
@@ -13,7 +14,7 @@ All Technical Context items are resolved; no NEEDS CLARIFICATION remain.
 - **Alternatives**: .NET (good for D365 integration but weaker OR-Tools tooling and would rewrite the reference); Node/TypeScript (no CP-SAT); Rust/rustworkx core (premature, kept as optimization path).
 
 ## R3. Graph library and k-shortest paths
-- **Decision**: networkx `shortest_simple_paths` (Yen) over a per-job filtered `DiGraph`, with parallel elements expanded after path search; switch to rustworkx if the benchmark misses the 1 s budget.
+- **Decision**: The canonical `TerminalGraph` is built from `TerminalDocument` by `packages/engine/graph.py`. `route_job` consumes its arcs, then runs networkx `shortest_simple_paths` (Yen) over a per-job filtered `DiGraph`; parallel elements are expanded after node-path search. The read-only graph endpoint serializes the same builder output. Switch to rustworkx only if the benchmark misses the 1 s budget.
 - **Rationale**: Matches the reference behaviour exactly (oracle comparison), simple API, adequate for 6k arcs and K=20.
 - **Alternatives**: igraph (fast but different API and tie-breaking); custom Yen (more code, no benefit yet); keeping only the cheapest parallel edge as the reference does (rejected: spec requires parallel lines as alternatives, so parallels are expanded post-search).
 
@@ -33,7 +34,7 @@ All Technical Context items are resolved; no NEEDS CLARIFICATION remain.
 - **Alternatives**: Single wide CSV (cannot express tank properties and changeover pairs cleanly); Excel (later).
 
 ## R7. Auto-layout for imports without coordinates
-- **Decision**: elkjs layered layout run in a Web Worker; user can then edit.
+- **Decision**: elkjs layered layout in a Web Worker remains the plan for imports without coordinates. The current editor uses deterministic fallback positions; automatic layout is not yet wired.
 - **Rationale**: Handles large graphs, orthogonal edge routing suits pipelines.
 - **Alternatives**: dagre (weaker orthogonal routing), force layout (unstable, unreadable for pipelines).
 
@@ -61,3 +62,8 @@ All Technical Context items are resolved; no NEEDS CLARIFICATION remain.
 
 ## R13. Testing strategy for correctness
 - **Decision**: Reference-oracle test compares Stage 1 candidate routes and metrics on the sample terminal to `lineup_cpsat.py` output; property tests (hypothesis) assert filtered arcs never appear in returned routes; Playwright mobile-viewport smoke test for pan/zoom and route request.
+
+## R14. Graph projection contract
+- **Decision**: `GET /terminals/{terminalId}/graph?version=N` returns the selected saved version's nodes and elements plus a serialized projection of the shared engine arcs. Each serialized arc includes its element ID, endpoints, reverse flag, traversability, and optional restriction. Structural errors (schema, duplicate IDs, dangling element references, self-loops) reject projection; non-structural validation issues accompany the graph.
+- **Rationale**: The designer can inspect exactly the graph derived for routing without persisting or maintaining a second graph model. The engine continues to route from `TerminalGraph`, not from the HTTP response.
+- **Alternatives**: Recompute a separate graph in the browser or API (risks semantic drift); persist derived arcs (duplicates document data and requires invalidation/versioning).

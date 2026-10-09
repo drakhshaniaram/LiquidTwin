@@ -10,7 +10,7 @@
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 Create repository layout from plan.md: `apps/web/`, `services/api/`, `packages/engine/`, `packages/schema/`, `tests/reference/`, `tests/perf/` with README stubs
+- [X] T001 Verify repository layout from plan.md: `apps/web/`, `services/api/`, `packages/engine/`, `packages/schema/`, `tests/reference/`, and `tests/perf/` exist; shared documentation lives in `docs/README.md`
 - [X] T002 [P] Initialize `packages/engine/pyproject.toml` (Python 3.12, networkx, pydantic, pytest, hypothesis; test-only: ortools for the reference oracle) and `packages/engine/src/liquidtwin_engine/__init__.py` exposing `__version__`
 - [X] T003 [P] Initialize `services/api/pyproject.toml` (FastAPI, SQLAlchemy, Alembic, psycopg, httpx, pytest) depending on `packages/engine`
 - [X] T004 [P] Initialize `apps/web` with Vite + React 18 + TypeScript 5, PixiJS v8, Zustand, TanStack Query, Papa Parse, elkjs, Vitest, Playwright, vite-plugin-pwa in `apps/web/package.json`
@@ -53,7 +53,7 @@
 - [X] T020 [P] [US1] Validation rule tests (dangling pipe, header on several tanks, duplicate ids, unknown product, stock > capacity, isolated node) in `packages/engine/tests/test_validation.py`
 - [X] T021 [P] [US1] CSV import tests incl. per-row errors, unknown column rejection, `x_` columns ignored, all-or-nothing in `packages/engine/tests/test_csv_import.py`
 - [X] T022 [P] [US1] JSON/CSV equivalence test (`-k import_equivalence`) comparing documents from `tests/reference/sample-terminal.json` and `tests/reference/csv/` in `tests/reference/test_import_equivalence.py`
-- [ ] T023 [P] [US1] API contract tests for terminals CRUD, import, export, versions, restore, and validate in `services/api/tests/test_terminals_api.py`
+- [X] T023 [P] [US1] API contract tests for terminals CRUD, import, export, versions, restore, and validate in `services/api/tests/test_terminals_api.py`
 - [ ] T024 [P] [US1] Editor logic tests (undo/redo depth 200, copy/paste id remap, connect rules) in `apps/web/tests/editor.test.ts`
 - [ ] T025 [P] [US1] Playwright test for the import flow and save/reload in `apps/web/tests/e2e/designer.spec.ts`
 
@@ -62,8 +62,8 @@
 - [X] T026 [P] [US1] Implement validation rules from data-model.md ("Validation rules" section) with `fix_hint` text in `packages/engine/src/liquidtwin_engine/validation.py`
 - [X] T027 [P] [US1] Implement CSV bundle to TerminalDocument conversion with row/file error reporting per `contracts/csv-import.md` in `packages/engine/src/liquidtwin_engine/csv_import.py`
 - [X] T028 [US1] Implement document export to JSON and CSV bundle (round-trip) in `packages/engine/src/liquidtwin_engine/export.py`
-- [ ] T029 [US1] Implement terminal and version routes (create, get latest or `?version`, list, append version, restore via `restore_from`) in `services/api/src/liquidtwin_api/routes/terminals.py`
-- [ ] T030 [US1] Implement import (JSON and multipart CSV) and export routes in `services/api/src/liquidtwin_api/routes/import_export.py`
+- [X] T029 [US1] Implement terminal and version routes (create, get latest or `?version`, list, append version, restore via `restore_from`) in `services/api/src/liquidtwin_api/routes/terminals.py`
+- [X] T030 [US1] Implement import (JSON and multipart CSV) and export routes in `services/api/src/liquidtwin_api/routes/import_export.py`
 - [X] T031 [US1] Implement validate route in `services/api/src/liquidtwin_api/routes/validate.py`
 - [ ] T033 [P] [US1] Build the Pixi canvas scene with layers, pan/zoom, selection, and level-of-detail in `apps/web/src/canvas/scene.ts`
 - [ ] T034 [P] [US1] Implement equipment palette and placement tools for all node types (TANK, JETTY, LOADING_POINT, RAIL_PLATFORM, RAIL_CAR, MANIFOLD, JUNCTION) in `apps/web/src/editor/palette.ts`
@@ -72,10 +72,10 @@
 - [ ] T037 [P] [US1] Generate property panels from the JSON Schema (typed forms, read-only computed area/volume) in `apps/web/src/editor/properties.tsx`
 - [ ] T037a [P] [US1] Build the changeover matrix editor (from product, to product, gap_min, flush_factor, manual_clean_required) in `apps/web/src/editor/changeover.tsx`
 - [X] T038 [P] [US1] Implement live validation list with click-to-locate in the terminal designer validation tray
-- [ ] T039 [P] [US1] Implement JSON and CSV import in the browser (Papa Parse mapping wizard, per-row errors, all-or-nothing) in `apps/web/src/import-export/importer.ts`
+- [X] T039 [P] [US1] Implement JSON file and multipart CSV bundle import from the register; shared server parser returns per-row errors and enforces all-or-nothing in `apps/web/src/App.tsx` and `services/api/src/liquidtwin_api/routes/import_export.py`
 - [ ] T040 [P] [US1] Implement auto-layout for documents without coordinates using elkjs in a Web Worker in `apps/web/src/import-export/layout.worker.ts`
-- [ ] T041 [US1] Implement save, version history list, and restore UI in `apps/web/src/editor/versions.tsx`
-- [ ] T043 [US1] Implement terminal list and create/import/delete screens in `apps/web/src/pages/TerminalList.tsx`
+- [X] T041 [US1] Implement save, version history list, and restore UI in `apps/web/src/App.tsx`
+- [X] T043 [US1] Implement terminal list and create/import/export/delete actions in `apps/web/src/App.tsx`
 
 **Checkpoint**: User Story 1 works and is demonstrable on its own.
 
@@ -94,7 +94,7 @@
 - [X] T046 [P] [US2] Routing tests for each filter and reason code (NOT_CERTIFIED, VELOCITY, RESIDUE, ONE_WAY_PUMP, DEDICATED_OTHER_GROUP, PUMP_HEAD, ENDPOINT_STOCK, ENDPOINT_SPACE, ENDPOINT_PRODUCT, ENDPOINT_DIRECTION), the source-equals-destination case, and no-route blockers in `packages/engine/tests/test_routing.py`
 - [X] T047 [P] [US2] Property tests: excluded arcs never appear in returned routes; results deterministic across runs in `packages/engine/tests/test_routing_properties.py`
 - [X] T048 [US2] Reference-oracle test: Stage 1 candidates and metrics on the sample match `tests/reference/lineup_cpsat.py` for all 4 jobs (3 to 7 candidates per job) in `tests/reference/test_stage1_oracle.py`
-- [ ] T049 [P] [US2] API contract tests for `POST /terminals/{id}/routes` (shortlist, exclusions, no_route) and `routes/confirm` in `services/api/tests/test_routes_api.py`
+- [X] T049 [P] [US2] API contract tests for `POST /terminals/{id}/routes` (shortlist, exclusions, no_route) and `routes/confirm` in `services/api/tests/test_terminals_api.py`
 - [ ] T050 [P] [US2] Performance benchmark: route < 1 s and graph build < 200 ms on 500 tanks / 5,000 pipes in `tests/perf/test_route_benchmark.py` with generator `tests/perf/generate_terminal.py`
 
 ### Implementation for User Story 2
@@ -106,12 +106,12 @@
 - [X] T055 [US2] Implement k-shortest simple paths (K=20, stable tie-break by element id), expansion of parallel elements, pump head budget check in `packages/engine/src/liquidtwin_engine/routing.py`
 - [X] T056 [US2] Implement route metrics (fill, transfer, flush time and volume, valves, common headers, head margin, max velocity) and shortlist ordering: total time, then flush volume, valve count, shared-header use (FR-013) in `packages/engine/src/liquidtwin_engine/routing.py`
 - [X] T057 [US2] Implement no-route explanation (cheapest blocked path and its blockers) in `packages/engine/src/liquidtwin_engine/explain.py`
-- [ ] T058 [US2] Implement `POST /terminals/{id}/routes` including `terminal_version` and `engine_version` in the response in `services/api/src/liquidtwin_api/routes/routing.py`
-- [ ] T059 [US2] Implement `POST /terminals/{id}/routes/confirm` storing the user-selected route (FR-023) in `services/api/src/liquidtwin_api/routes/routing.py`
-- [ ] T060 [P] [US2] Build the route request form (source, destination, product, volume, rate, window, direction) in `apps/web/src/planner/RouteForm.tsx`
-- [ ] T061 [P] [US2] Build the shortlist and metrics panel with a confirm button when more than one route remains in `apps/web/src/planner/RouteResults.tsx`
-- [ ] T062 [P] [US2] Build the explanation panel (exclusions by reason, no-route blockers with element links) in `apps/web/src/planner/Explanation.tsx`
-- [ ] T063 [US2] Implement route highlight overlay and alternative preview on the canvas in `apps/web/src/canvas/routeOverlay.ts`
+- [X] T058 [US2] Implement `POST /terminals/{id}/routes` including `terminal_version` and `engine_version` in the response in `services/api/src/liquidtwin_api/routes/routing.py`
+- [X] T059 [US2] Implement `POST /terminals/{id}/routes/confirm` storing the user-selected route (FR-023) in `services/api/src/liquidtwin_api/routes/routing.py`
+- [X] T060 [P] [US2] Build the route request form (source, destination, product, volume, rate, window, direction) in `apps/web/src/App.tsx`
+- [X] T061 [P] [US2] Build the shortlist and metrics panel with a confirm button when more than one route remains in `apps/web/src/App.tsx`
+- [X] T062 [P] [US2] Build the explanation panel (exclusions by reason, no-route blockers with element focus) in `apps/web/src/App.tsx`
+- [X] T063 [US2] Implement route highlight overlay and alternative preview on the layout and graph views in `apps/web/src/App.tsx` and `apps/web/src/styles.css`
 - [ ] T064 [US2] Add Playwright flow: request route, see explanation for an uncertified pipe, confirm a route in `apps/web/tests/e2e/planner.spec.ts`
 
 **Checkpoint**: User Stories 1 and 2 both work; core MVP value delivered.
@@ -127,18 +127,18 @@
 ### Tests for User Story 3 (write first, must fail)
 
 - [X] T065 [P] [US3] Engine tests for window overlap against job window and UNAVAILABLE reason code in `packages/engine/tests/test_availability.py`
-- [ ] T066 [P] [US3] API tests for availability upsert idempotency (element_id+source+external_ref), unknown elements reported not fatal, list filters, delete, max 5000 items in `services/api/tests/test_availability_api.py`
+- [X] T066 [P] [US3] API tests for availability upsert idempotency (element_id+source+external_ref), unknown elements reported not fatal, list filters, delete, max 5000 items in `services/api/tests/test_terminals_api.py`
 - [ ] T067 [P] [US3] Playwright test for marking maintenance and re-requesting a route in `apps/web/tests/e2e/availability.spec.ts`
 
 ### Implementation for User Story 3
 
 - [ ] T068 [US3] Implement availability overlay on the graph (incremental flagging, < 20 ms) in `packages/engine/src/liquidtwin_engine/graph.py`
 - [X] T069 [US3] Apply availability windows in arc filtering for the job window (FR-010, FR-016) in `packages/engine/src/liquidtwin_engine/routing.py`
-- [ ] T070 [US3] Implement availability routes (list, upsert, delete) in `services/api/src/liquidtwin_api/routes/availability.py`
-- [ ] T071 [US3] Mark ConfirmedRoute records outdated when an overlapping window changes (FR-016) in `services/api/src/liquidtwin_api/routes/availability.py`
-- [ ] T072 [P] [US3] Build the availability editor (equipment, status, from/to, reason) and overlay layer in `apps/web/src/availability/AvailabilityEditor.tsx`
-- [ ] T073 [US3] Show outdated badge on stale routes in `apps/web/src/planner/RouteResults.tsx`
-- [ ] T074 [US3] Support availability.csv import in `packages/engine/src/liquidtwin_engine/csv_import.py`
+- [X] T070 [US3] Implement availability routes (list, upsert, delete) in `services/api/src/liquidtwin_api/routes/availability.py`
+- [X] T071 [US3] Mark ConfirmedRoute records outdated when an overlapping window changes in `services/api/src/liquidtwin_api/routes/availability.py`
+- [X] T072 [P] [US3] Build the manual availability editor, scheduled-window list, and graph status overlay in `apps/web/src/App.tsx` and `apps/web/src/styles.css`
+- [X] T073 [US3] Show outdated status for confirmed routes in `apps/web/src/App.tsx`
+- [X] T074 [US3] Parse and persist availability.csv rows during CSV import in `packages/engine/src/liquidtwin_engine/csv_import.py` and `services/api/src/liquidtwin_api/routes/import_export.py`
 
 **Checkpoint**: Availability changes route results end to end.
 
@@ -173,6 +173,19 @@
 - [ ] T083 Security pass: input size limits, CSV/JSON parser limits, error messages without internals, deploy note that the app is trusted-network only until OIDC (plan Complexity Tracking) in `services/api/src/liquidtwin_api/main.py` and `README.md`
 - [ ] T084 Run all quickstart.md scenarios and record results in `specs/001-terminal-designer-routing/quickstart.md`
 - [ ] T085 [P] Add Dockerfiles for api and web, and a production compose file in `docker-compose.prod.yml`
+
+---
+
+## Phase 8: Graph Projection and Designer View (Completed)
+
+**Purpose**: Expose the canonical engine graph for inspection and render that same topology in the designer.
+
+- [X] T086 [P] [US2] Add graph API tests for directed arcs, parallel elements, structural errors, and retained non-structural issues in `services/api/tests/test_terminals_api.py`
+- [X] T087 [US2] Expose a versioned graph projection using the shared `build_graph` model in `services/api/src/liquidtwin_api/routes/graph.py`
+- [X] T088 [US2] Block reverse pump traversal even when head is zero and cover it in `packages/engine/src/liquidtwin_engine/routing.py` and `packages/engine/tests/test_routing.py`
+- [X] T089 [US2] Add the responsive Layout/Graph view with direction and validation status in `apps/web/src/App.tsx` and `apps/web/src/styles.css`
+- [X] T090 [US2] Regenerate and consume the typed graph API contract in `apps/web/src/api/client.ts` and `apps/web/src/api/terminals.ts`
+- [X] T091 [US3] Overlay active/upcoming element availability states on the Graph view in `apps/web/src/App.tsx` and `apps/web/src/styles.css`
 
 ---
 

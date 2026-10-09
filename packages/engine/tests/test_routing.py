@@ -116,3 +116,107 @@ def test_parallel_elements_offered_as_alternatives(sample):
 def test_deterministic(sample):
     a, b = run(sample), run(sample)
     assert [r.element_ids for r in a.routes] == [r.element_ids for r in b.routes]
+
+
+def add_curve_to_first_pump(sample, max_flow=1000):
+    sample["schema_version"] = "1.1"
+    pump = next(element for element in sample["elements"] if element["id"] == "3")
+    pump["performance_curve"] = {
+        "model": "TABULAR",
+        "min_flow_m3h": 100,
+        "max_flow_m3h": max_flow,
+        "points": [
+            {"flow_m3h": 100, "head_m": 60},
+            {"flow_m3h": max_flow, "head_m": 10},
+        ],
+        "speed_ratio_min": 0.5,
+        "speed_ratio_max": 1.0,
+    }
+    pump["npsh_required_m"] = 2.0
+    pump["npsh_margin_m"] = 0.5
+
+
+def test_curve_pump_route_reports_operating_flow_and_suction_margin(sample):
+    add_curve_to_first_pump(sample)
+    request = req(rate_m3h=400, destination_ids=("7",), pump_suction_inputs=(("3", 4.0),))
+
+    result = run(sample, request)
+
+    assert result.routes
+    metrics = result.routes[0].metrics
+    assert 400 <= metrics.operating_flow_m3h <= 1000
+    assert metrics.suction_margin_m == pytest.approx(1.5)
+    assert metrics.pump_head_m == pytest.approx(metrics.system_head_m, abs=0.01)
+
+
+def test_curve_pump_requires_operation_specific_suction_input(sample):
+    add_curve_to_first_pump(sample)
+    request = req(rate_m3h=400, destination_ids=("7",))
+
+    result = run(sample, request)
+
+    assert result.routes == []
+    assert R.PUMP_SUCTION_MARGIN in {reason for _, reason in reasons(result)}
+
+
+def test_curve_pump_rejects_requested_rate_above_curve_range(sample):
+    add_curve_to_first_pump(sample, max_flow=300)
+    request = req(rate_m3h=400, destination_ids=("7",), pump_suction_inputs=(("3", 4.0),))
+
+    result = run(sample, request)
+
+    assert result.routes == []
+    assert R.PUMP_FLOW_OUT_OF_RANGE in {reason for _, reason in reasons(result)}
+
+
+def test_curve_pump_rejects_route_without_system_intersection(sample):
+    add_curve_to_first_pump(sample)
+    next(element for element in sample["elements"] if element["id"] == "4")["elevation_delta_m"] = 1000
+    request = req(rate_m3h=400, destination_ids=("7",), pump_suction_inputs=(("3", 4.0),))
+
+    result = run(sample, request)
+
+    assert result.routes == []
+    assert R.NO_PUMP_SYSTEM_INTERSECTION in {reason for _, reason in reasons(result)}
+
+
+def test_parallel_pump_train_combines_member_curves_for_route(sample):
+    sample["schema_version"] = "1.1"
+    sample["pump_trains"] = [
+        {"id": "parallel-1", "arrangement": "PARALLEL", "member_pump_ids": ["3", "12"]}
+    ]
+    curve = {
+        "model": "TABULAR",
+        "min_flow_m3h": 100,
+        "max_flow_m3h": 1000,
+        "points": [
+            {"flow_m3h": 100, "head_m": 60},
+            {"flow_m3h": 1000, "head_m": 10},
+        ],
+        "speed_ratio_min": 0.5,
+        "speed_ratio_max": 1.0,
+    }
+    for pump_id in ("3", "12"):
+        pump = next(element for element in sample["elements"] if element["id"] == pump_id)
+        pump.update(
+            from_="3",
+            to="12",
+            diameter_mm=400,
+            elevation_delta_m=50,
+            performance_curve=curve,
+            npsh_required_m=2.0,
+            npsh_margin_m=0.5,
+        )
+        pump["from"] = pump.pop("from_")
+    request = req(
+        rate_m3h=400,
+        source_ids=("3",),
+        destination_ids=("12",),
+        pump_suction_inputs=(("3", 4.0), ("12", 4.0)),
+    )
+
+    result = run(sample, request)
+
+    assert result.routes
+    assert result.routes[0].metrics.operating_flow_m3h >= 400
+    assert 0.5 < result.routes[0].metrics.pump_speed_ratio < 1.0

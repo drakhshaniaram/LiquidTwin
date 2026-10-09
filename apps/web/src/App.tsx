@@ -2,8 +2,10 @@ import {
   Activity,
   ArrowUpRight,
   Boxes,
+  CalendarDays,
   CircleAlert,
   Copy,
+  Download,
   GitBranch,
   History,
   LoaderCircle,
@@ -16,6 +18,7 @@ import {
   Save,
   Trash2,
   Undo2,
+  Upload,
   Wrench,
   X,
   ZoomIn,
@@ -36,18 +39,41 @@ import {
 } from 'react-router-dom';
 
 import {
+  confirmTerminalRoute,
   createTerminal,
+  deleteAvailabilityWindow,
+  deleteTerminal,
+  exportTerminal,
   getTerminalGraph,
   getTerminal,
+  importTerminalCsvBundle,
+  importTerminalJson,
+  listAvailabilityWindows,
+  listConfirmedRoutes,
   listTerminals,
+  listTerminalVersions,
+  optimizeTerminal,
+  prepareOptimization,
+  requestRoutes,
+  restoreTerminalVersion,
   saveTerminalDocument,
+  upsertAvailabilityWindows,
   validateTerminalDocument,
+  type AvailabilityWindow,
+  type OptimizationPreparation,
+  type OptimizationResult,
+  type OptimizationScenario,
   type TerminalGraph,
+  type RouteRequest,
+  type RouteResponse,
+  type TerminalSummary,
   type ValidationIssue,
 } from './api/terminals';
 import type {
   Element as TerminalElement,
   Node as TerminalNode,
+  PerformanceCurve,
+  PumpTrain,
   TerminalDocument,
 } from './api/types';
 import { commitHistory, createHistory, redoHistory, undoHistory } from './editor/history';
@@ -57,6 +83,7 @@ const navigation = [
   { to: '/terminals', label: 'Terminals', Icon: Boxes },
   { to: '/designer', label: 'Designer', Icon: GitBranch },
   { to: '/planner', label: 'Route planner', Icon: RouteIcon },
+  { to: '/optimization', label: 'Optimization', Icon: CalendarDays },
   { to: '/availability', label: 'Availability', Icon: Activity },
   { to: '/versions', label: 'Versions', Icon: History },
 ];
@@ -166,6 +193,10 @@ function TerminalRegister() {
   const setActiveTerminal = useWorkspaceStore((state) => state.setActiveTerminal);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [terminalName, setTerminalName] = useState('');
+  const [showImportForm, setShowImportForm] = useState(false);
+  const [importName, setImportName] = useState('');
+  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [registerError, setRegisterError] = useState('');
   const terminals = useQuery({ queryKey: ['terminals'], queryFn: listTerminals });
   const create = useMutation({
     mutationFn: createTerminal,
@@ -175,11 +206,85 @@ function TerminalRegister() {
       navigate(`/designer/${terminal.id}`);
     },
   });
+  const importTerminal = useMutation({
+    mutationFn: async ({ name, files }: { name: string; files: File[] }) => {
+      if (files.length === 0) throw new Error('Choose a JSON file or CSV bundle.');
+      const trimmedName = name.trim();
+      if (files.length === 1 && files[0].name.toLowerCase().endsWith('.json')) {
+        const parsed: unknown = JSON.parse(await files[0].text());
+        if (!parsed || typeof parsed !== 'object')
+          throw new Error('The JSON file must contain a terminal document.');
+        const envelope = parsed as { name?: unknown; document?: unknown };
+        const document = (envelope.document ?? parsed) as TerminalDocument;
+        const resolvedName =
+          trimmedName || (typeof envelope.name === 'string' ? envelope.name : '') || document.name;
+        if (!resolvedName) throw new Error('Provide a terminal name for this JSON document.');
+        return importTerminalJson(resolvedName, document);
+      }
+      if (!trimmedName) throw new Error('Enter a terminal name for the CSV bundle.');
+      if (files.some((file) => !file.name.toLowerCase().endsWith('.csv'))) {
+        throw new Error('Choose one JSON file or CSV files only.');
+      }
+      return importTerminalCsvBundle(trimmedName, files);
+    },
+    onSuccess: async (terminal) => {
+      setActiveTerminal(terminal.id);
+      setShowImportForm(false);
+      setImportFiles([]);
+      setRegisterError('');
+      await queryClient.invalidateQueries({ queryKey: ['terminals'] });
+      navigate(`/designer/${terminal.id}`);
+    },
+    onError: (error: Error) => setRegisterError(error.message),
+  });
+  const removeTerminal = useMutation({
+    mutationFn: deleteTerminal,
+    onSuccess: async (_result, terminalId) => {
+      if (useWorkspaceStore.getState().activeTerminalId === terminalId) setActiveTerminal(null);
+      await queryClient.invalidateQueries({ queryKey: ['terminals'] });
+    },
+    onError: (error: Error) => setRegisterError(error.message),
+  });
+  const exportSavedTerminal = useMutation({
+    mutationFn: ({
+      terminalId,
+      format,
+    }: {
+      terminalId: string;
+      format: 'json' | 'csv';
+      terminal: TerminalSummary;
+    }) => exportTerminal(terminalId, format),
+    onSuccess: (blob, { terminal, format }) => {
+      const url = URL.createObjectURL(blob);
+      const anchor = window.document.createElement('a');
+      const baseName = terminal.name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-');
+      const extension = format === 'csv' ? 'zip' : 'json';
+      anchor.href = url;
+      anchor.download = `${baseName || 'terminal'}.${extension}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    },
+    onError: (error: Error) => setRegisterError(error.message),
+  });
 
   function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = terminalName.trim();
     if (name) create.mutate(name);
+  }
+
+  function handleImport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    importTerminal.mutate({ name: importName, files: importFiles });
+  }
+
+  function confirmDelete(terminal: TerminalSummary) {
+    if (window.confirm(`Delete ${terminal.name} and its version history?`)) {
+      removeTerminal.mutate(terminal.id);
+    }
   }
 
   return (
@@ -189,13 +294,32 @@ function TerminalRegister() {
         title="Terminals"
         summary="Terminal inventory"
         action={
-          <button
-            className="primary-action"
-            type="button"
-            onClick={() => setShowCreateForm((visible) => !visible)}
-          >
-            <Plus size={16} aria-hidden="true" /> New terminal
-          </button>
+          <div className="register-actions">
+            <button
+              className="primary-action"
+              type="button"
+              onClick={() => {
+                setShowCreateForm((visible) => !visible);
+                setShowImportForm(false);
+                setRegisterError('');
+              }}
+            >
+              <Plus size={16} aria-hidden="true" /> New terminal
+            </button>
+            <button
+              aria-label="Import terminal"
+              className="secondary-action"
+              title="Import JSON or CSV"
+              type="button"
+              onClick={() => {
+                setShowImportForm((visible) => !visible);
+                setShowCreateForm(false);
+                setRegisterError('');
+              }}
+            >
+              <Upload size={16} aria-hidden="true" /> <span>Import</span>
+            </button>
+          </div>
         }
       />
       {showCreateForm && (
@@ -221,12 +345,47 @@ function TerminalRegister() {
           )}
         </form>
       )}
+      {showImportForm && (
+        <form className="create-terminal import-terminal" onSubmit={handleImport}>
+          <label htmlFor="import-terminal-name">Terminal name</label>
+          <input
+            id="import-terminal-name"
+            maxLength={120}
+            onChange={(event) => setImportName(event.target.value)}
+            placeholder="Required for CSV; JSON name is used by default"
+            value={importName}
+          />
+          <label htmlFor="terminal-import-files">JSON file or CSV bundle</label>
+          <input
+            accept=".json,.csv"
+            id="terminal-import-files"
+            multiple
+            onChange={(event) => setImportFiles(Array.from(event.target.files ?? []))}
+            required
+            type="file"
+          />
+          <button className="primary-action" disabled={importTerminal.isPending} type="submit">
+            {importTerminal.isPending ? (
+              <LoaderCircle className="spin" size={16} />
+            ) : (
+              <Upload size={16} />
+            )}
+            Import and design
+          </button>
+        </form>
+      )}
+      {registerError && (
+        <p className="form-error register-error" role="alert">
+          {registerError}
+        </p>
+      )}
       <section className="register" aria-label="Terminal inventory">
         <div className="register-head">
           <span>TERMINAL</span>
           <span>VERSION</span>
           <span>UPDATED</span>
           <span>OPEN</span>
+          <span>ACTIONS</span>
         </div>
         {terminals.isLoading && (
           <div className="register-message">
@@ -256,21 +415,67 @@ function TerminalRegister() {
         {terminals.data && terminals.data.length > 0 && (
           <div className="terminal-rows">
             {terminals.data.map((terminal) => (
-              <Link
-                className="terminal-row"
-                key={terminal.id}
-                onClick={() => setActiveTerminal(terminal.id)}
-                to={`/designer/${terminal.id}`}
-              >
-                <strong>{terminal.name}</strong>
+              <div className="terminal-row" key={terminal.id}>
+                <Link
+                  className="terminal-row-name"
+                  onClick={() => setActiveTerminal(terminal.id)}
+                  to={`/designer/${terminal.id}`}
+                >
+                  <strong>{terminal.name}</strong>
+                </Link>
                 <span className="table-number">V{terminal.current_version}</span>
                 <time dateTime={terminal.updated_at}>
                   {new Date(terminal.updated_at).toLocaleString()}
                 </time>
-                <span className="row-open">
+                <Link
+                  className="row-open"
+                  onClick={() => setActiveTerminal(terminal.id)}
+                  to={`/designer/${terminal.id}`}
+                >
                   Design <ArrowUpRight size={15} />
-                </span>
-              </Link>
+                </Link>
+                <div className="terminal-row-actions">
+                  <button
+                    aria-label={`Export ${terminal.name} as JSON`}
+                    disabled={exportSavedTerminal.isPending}
+                    title="Export JSON"
+                    type="button"
+                    onClick={() =>
+                      exportSavedTerminal.mutate({
+                        terminalId: terminal.id,
+                        format: 'json',
+                        terminal,
+                      })
+                    }
+                  >
+                    <Download size={14} />
+                  </button>
+                  <button
+                    aria-label={`Export ${terminal.name} as CSV bundle`}
+                    disabled={exportSavedTerminal.isPending}
+                    title="Export CSV bundle"
+                    type="button"
+                    onClick={() =>
+                      exportSavedTerminal.mutate({
+                        terminalId: terminal.id,
+                        format: 'csv',
+                        terminal,
+                      })
+                    }
+                  >
+                    <Boxes size={14} />
+                  </button>
+                  <button
+                    aria-label={`Delete ${terminal.name}`}
+                    disabled={removeTerminal.isPending}
+                    title="Delete terminal"
+                    type="button"
+                    onClick={() => confirmDelete(terminal)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         )}
@@ -323,6 +528,1647 @@ function ModulePage({
   );
 }
 
+function VersionsPage() {
+  const terminalId = useWorkspaceStore((state) => state.activeTerminalId);
+  const queryClient = useQueryClient();
+  const [message, setMessage] = useState('');
+  const terminal = useQuery({
+    queryKey: ['terminal', terminalId],
+    queryFn: () => getTerminal(terminalId!),
+    enabled: terminalId !== null,
+  });
+  const versions = useQuery({
+    queryKey: ['terminal-versions', terminalId],
+    queryFn: () => listTerminalVersions(terminalId!),
+    enabled: terminalId !== null,
+  });
+  const restore = useMutation({
+    mutationFn: (version: number) => restoreTerminalVersion(terminalId!, version),
+    onSuccess: async (result) => {
+      setMessage(`Version ${result.version} restored as the current version.`);
+      await queryClient.invalidateQueries({ queryKey: ['terminal', terminalId] });
+      await queryClient.invalidateQueries({ queryKey: ['terminal-versions', terminalId] });
+      await queryClient.invalidateQueries({ queryKey: ['terminals'] });
+    },
+  });
+
+  return (
+    <>
+      <PageHeading
+        eyebrow="CHANGE HISTORY"
+        title="Versions"
+        summary={
+          terminalId
+            ? `Saved versions · ${terminal.data?.name ?? 'Loading terminal'}`
+            : 'Terminal document history'
+        }
+        action={
+          terminalId ? (
+            <Link className="text-action" to={`/designer/${terminalId}`}>
+              Open designer <ArrowUpRight size={16} />
+            </Link>
+          ) : undefined
+        }
+      />
+      {!terminalId ? (
+        <div className="register-message">
+          Select a terminal from the register to view its version history.
+        </div>
+      ) : versions.isLoading ? (
+        <div className="register-message">
+          <LoaderCircle className="spin" size={18} /> Loading versions
+        </div>
+      ) : versions.isError ? (
+        <div className="register-message error-message" role="alert">
+          {versions.error.message}
+        </div>
+      ) : (
+        <section className="version-history" aria-label="Terminal version history">
+          {message && (
+            <p className="version-status" role="status">
+              {message}
+            </p>
+          )}
+          {versions.data?.map((item) => (
+            <div className="version-row" key={item.version}>
+              <strong>V{item.version}</strong>
+              <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
+              <span>
+                {item.version === terminal.data?.version ? 'Current' : item.note || 'Saved version'}
+              </span>
+              {item.version === terminal.data?.version ? (
+                <span className="version-current">CURRENT</span>
+              ) : (
+                <button
+                  className="secondary-action"
+                  disabled={restore.isPending}
+                  type="button"
+                  onClick={() => {
+                    setMessage('');
+                    restore.mutate(item.version);
+                  }}
+                >
+                  {restore.isPending ? (
+                    <LoaderCircle className="spin" size={14} />
+                  ) : (
+                    <History size={14} />
+                  )}
+                  Restore
+                </button>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+    </>
+  );
+}
+
+type PlannerFormState = {
+  direction: 'IN' | 'OUT' | 'TRANSFER';
+  productId: string;
+  sourceId: string;
+  destinationId: string;
+  volume: string;
+  rate: string;
+  windowFrom: string;
+  windowTo: string;
+};
+
+type AvailabilityStatus = 'AVAILABLE' | 'MAINTENANCE' | 'FLUSHING' | 'CLEANING' | 'OUT_OF_SERVICE';
+
+function AvailabilityPage() {
+  const terminalId = useWorkspaceStore((state) => state.activeTerminalId);
+  const queryClient = useQueryClient();
+  const [elementId, setElementId] = useState('');
+  const [status, setStatus] = useState<AvailabilityStatus>('MAINTENANCE');
+  const [startsAt, setStartsAt] = useState(localDateTimeInputValue());
+  const [endsAt, setEndsAt] = useState('');
+  const [reason, setReason] = useState('');
+  const [source, setSource] = useState('manual');
+  const [externalRef, setExternalRef] = useState('');
+  const [message, setMessage] = useState('');
+  const terminal = useQuery({
+    queryKey: ['terminal', terminalId],
+    queryFn: () => getTerminal(terminalId!),
+    enabled: terminalId !== null,
+  });
+  const windows = useQuery({
+    queryKey: ['availability', terminalId],
+    queryFn: () => listAvailabilityWindows(terminalId!),
+    enabled: terminalId !== null,
+  });
+  const save = useMutation({
+    mutationFn: () => {
+      if (!terminalId) throw new Error('Select a terminal first.');
+      return upsertAvailabilityWindows(terminalId, [
+        {
+          element_id: elementId,
+          status,
+          from: new Date(startsAt).toISOString(),
+          ...(endsAt ? { to: new Date(endsAt).toISOString() } : {}),
+          reason,
+          source,
+          ...(externalRef ? { external_ref: externalRef } : {}),
+        },
+      ]);
+    },
+    onSuccess: async (result) => {
+      setMessage(
+        result.rejected.length
+          ? result.rejected.map((item) => item.reason).join('; ')
+          : `${result.applied} availability window saved.`,
+      );
+      await queryClient.invalidateQueries({ queryKey: ['availability', terminalId] });
+      await queryClient.invalidateQueries({ queryKey: ['confirmed-routes', terminalId] });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: (windowId: string) => deleteAvailabilityWindow(terminalId!, windowId),
+    onSuccess: async () => {
+      setMessage('Availability window deleted. Affected confirmed routes may be outdated.');
+      await queryClient.invalidateQueries({ queryKey: ['availability', terminalId] });
+      await queryClient.invalidateQueries({ queryKey: ['confirmed-routes', terminalId] });
+    },
+  });
+
+  if (!terminalId) {
+    return (
+      <ModulePage
+        eyebrow="EQUIPMENT STATUS"
+        title="Availability"
+        summary="Maintenance and equipment windows"
+        Icon={Activity}
+      />
+    );
+  }
+
+  const elements = terminal.data?.document.elements ?? [];
+  return (
+    <>
+      <PageHeading
+        eyebrow="EQUIPMENT STATUS"
+        title="Availability"
+        summary={
+          terminal.data
+            ? `${terminal.data.name} · V${terminal.data.version}`
+            : 'Maintenance and equipment windows'
+        }
+        action={
+          <Link className="text-action" to={`/designer/${terminalId}`}>
+            Terminal graph <ArrowUpRight size={16} />
+          </Link>
+        }
+      />
+      {terminal.isLoading ? (
+        <div className="register-message">
+          <LoaderCircle className="spin" size={18} /> Loading terminal
+        </div>
+      ) : terminal.isError ? (
+        <div className="register-message error-message" role="alert">
+          {terminal.error.message}
+        </div>
+      ) : (
+        <>
+          <form
+            className="availability-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              save.mutate();
+            }}
+          >
+            <label>
+              Equipment
+              <select
+                required
+                value={elementId}
+                onChange={(event) => setElementId(event.target.value)}
+              >
+                <option value="">Select pipeline or component</option>
+                {elements.map((element) => (
+                  <option key={element.id} value={element.id}>
+                    {element.id} · {element.type.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Status
+              <select
+                value={status}
+                onChange={(event) => setStatus(event.target.value as AvailabilityStatus)}
+              >
+                <option value="AVAILABLE">Available</option>
+                <option value="MAINTENANCE">Maintenance</option>
+                <option value="FLUSHING">Flushing</option>
+                <option value="CLEANING">Cleaning</option>
+                <option value="OUT_OF_SERVICE">Out of service</option>
+              </select>
+            </label>
+            <label>
+              From
+              <input
+                required
+                type="datetime-local"
+                value={startsAt}
+                onChange={(event) => setStartsAt(event.target.value)}
+              />
+            </label>
+            <label>
+              To
+              <input
+                type="datetime-local"
+                value={endsAt}
+                onChange={(event) => setEndsAt(event.target.value)}
+              />
+            </label>
+            <label>
+              Reason
+              <input
+                maxLength={500}
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </label>
+            <label>
+              Source
+              <input
+                maxLength={120}
+                required
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+              />
+            </label>
+            <label>
+              External reference
+              <input
+                maxLength={255}
+                value={externalRef}
+                onChange={(event) => setExternalRef(event.target.value)}
+              />
+            </label>
+            <button
+              className="primary-action"
+              disabled={save.isPending || elements.length === 0}
+              type="submit"
+            >
+              {save.isPending ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}
+              Save window
+            </button>
+            {(save.isError || remove.isError) && (
+              <p className="form-error" role="alert">
+                {save.error?.message ?? remove.error?.message}
+              </p>
+            )}
+            {message && (
+              <p className="availability-message" role="status">
+                {message}
+              </p>
+            )}
+          </form>
+          <section className="availability-list" aria-label="Availability windows">
+            <div className="availability-list-heading">
+              <strong>Scheduled windows</strong>
+              <span>{windows.data?.length ?? 0}</span>
+            </div>
+            {windows.isLoading ? (
+              <div className="register-message">
+                <LoaderCircle className="spin" size={18} /> Loading windows
+              </div>
+            ) : windows.isError ? (
+              <div className="register-message error-message" role="alert">
+                {windows.error.message}
+              </div>
+            ) : windows.data?.length ? (
+              windows.data.map((window) => (
+                <div className="availability-row" key={window.id}>
+                  <strong>{window.element_id}</strong>
+                  <span
+                    className={`availability-state is-${window.status.toLowerCase().replaceAll('_', '-')}`}
+                  >
+                    {window.status.replaceAll('_', ' ')}
+                  </span>
+                  <time dateTime={window.from}>{new Date(window.from).toLocaleString()}</time>
+                  <span>{window.to ? new Date(window.to).toLocaleString() : 'Open ended'}</span>
+                  <span>{window.reason || window.source}</span>
+                  <button
+                    aria-label={`Delete availability window for ${window.element_id}`}
+                    disabled={remove.isPending}
+                    title="Delete window"
+                    type="button"
+                    onClick={() => remove.mutate(window.id)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))
+            ) : (
+              <p className="planner-empty">No availability windows recorded for this terminal.</p>
+            )}
+          </section>
+        </>
+      )}
+    </>
+  );
+}
+
+function localDateTimeInputValue(date = new Date()): string {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+type RouteExclusion = RouteResponse['exclusions'][number];
+
+const ROUTE_CRITERIA: Record<
+  RouteExclusion['reason'],
+  { id: string; title: string; rule: string }
+> = {
+  NOT_CERTIFIED: {
+    id: 'C-01',
+    title: 'Product certification',
+    rule: 'Every route element must be certified for the selected product.',
+  },
+  VELOCITY: {
+    id: 'C-02',
+    title: 'Velocity limit',
+    rule: 'Flow velocity must not exceed the product limit in any pipe.',
+  },
+  RESIDUE: {
+    id: 'C-03',
+    title: 'Residue and cleaning',
+    rule: 'A route is rejected when the previous product requires manual cleaning.',
+  },
+  ONE_WAY_PUMP: {
+    id: 'C-04',
+    title: 'Pump direction',
+    rule: 'A one-way pump cannot be traversed in reverse.',
+  },
+  UNAVAILABLE: {
+    id: 'C-05',
+    title: 'Equipment availability',
+    rule: 'Unavailable equipment cannot be used during the requested job window.',
+  },
+  DEDICATED_OTHER_GROUP: {
+    id: 'C-06',
+    title: 'Equipment dedication',
+    rule: 'Dedicated equipment must match the endpoint tank group or product.',
+  },
+  PUMP_HEAD: {
+    id: 'C-07',
+    title: 'Pump head',
+    rule: 'Available pump head must cover route friction and elevation lift.',
+  },
+  ENDPOINT_STOCK: {
+    id: 'C-08',
+    title: 'Source stock',
+    rule: 'The source tank must contain the requested transfer volume.',
+  },
+  ENDPOINT_SPACE: {
+    id: 'C-09',
+    title: 'Destination ullage',
+    rule: 'The destination tank must have capacity for the requested volume.',
+  },
+  ENDPOINT_PRODUCT: {
+    id: 'C-10',
+    title: 'Endpoint product',
+    rule: 'Tank contents and endpoint compatibility must match the selected product.',
+  },
+  ENDPOINT_DIRECTION: {
+    id: 'C-11',
+    title: 'Endpoint direction',
+    rule: 'Source and destination must permit the requested operation direction.',
+  },
+  INVALID_PUMP_CURVE: {
+    id: 'C-12',
+    title: 'Pump curve validity',
+    rule: 'A curve must be valid and configured on a pump element.',
+  },
+  PUMP_FLOW_OUT_OF_RANGE: {
+    id: 'C-13',
+    title: 'Pump flow range',
+    rule: 'The requested minimum flow must fit within every pump and pipe limit.',
+  },
+  NO_PUMP_SYSTEM_INTERSECTION: {
+    id: 'C-14',
+    title: 'Operating point',
+    rule: 'The pump curve must intersect the route system-head curve in range.',
+  },
+  PUMP_SPEED_OUT_OF_RANGE: {
+    id: 'C-15',
+    title: 'Pump speed range',
+    rule: 'The operating point must fit the common permitted speed range.',
+  },
+  PUMP_SUCTION_MARGIN: {
+    id: 'C-16',
+    title: 'Suction margin',
+    rule: 'Available NPSH must meet required NPSH plus the configured margin.',
+  },
+};
+
+function RouteExclusionDetail({
+  exclusion,
+  onFocus,
+}: {
+  exclusion: RouteExclusion;
+  onFocus?: (elementId: string) => void;
+}) {
+  const criterion = ROUTE_CRITERIA[exclusion.reason];
+  return (
+    <details className="route-exclusion-detail">
+      <summary>
+        <span>{criterion.id}</span> {criterion.title} · {exclusion.reason.replaceAll('_', ' ')}
+      </summary>
+      <p>{criterion.rule}</p>
+      <p>{exclusion.detail}</p>
+      {exclusion.element_id && onFocus && (
+        <button
+          className="route-exclusion-focus"
+          type="button"
+          onClick={() => onFocus(exclusion.element_id!)}
+        >
+          Focus {exclusion.element_id} in terminal
+        </button>
+      )}
+    </details>
+  );
+}
+
+type OptimizationJobDraft = {
+  id: string;
+  direction: PlannerFormState['direction'];
+  productId: string;
+  sourceId: string;
+  destinationId: string;
+  volume: string;
+  rate: string;
+  earliestStart: string;
+  due: string;
+  pumpSuctionInputs: Record<string, string>;
+};
+
+function createOptimizationJob(id: string): OptimizationJobDraft {
+  return {
+    id,
+    direction: 'IN',
+    productId: '',
+    sourceId: '',
+    destinationId: '',
+    volume: '1000',
+    rate: '500',
+    earliestStart: '0',
+    due: '400',
+    pumpSuctionInputs: {},
+  };
+}
+
+function OptimizationPage() {
+  const terminalId = useWorkspaceStore((state) => state.activeTerminalId);
+  const setActiveTerminal = useWorkspaceStore((state) => state.setActiveTerminal);
+  const setFocusedRoute = useWorkspaceStore((state) => state.setFocusedRoute);
+  const terminals = useQuery({ queryKey: ['terminals'], queryFn: listTerminals });
+  const terminal = useQuery({
+    queryKey: ['terminal', terminalId],
+    queryFn: () => getTerminal(terminalId!),
+    enabled: terminalId !== null,
+  });
+  const [horizonStart, setHorizonStart] = useState(localDateTimeInputValue());
+  const [horizonMinutes, setHorizonMinutes] = useState('1000');
+  const [jobs, setJobs] = useState<OptimizationJobDraft[]>([createOptimizationJob('job-1')]);
+  const [preparation, setPreparation] = useState<OptimizationPreparation | null>(null);
+  const [preparedScenario, setPreparedScenario] = useState<OptimizationScenario | null>(null);
+  const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
+  const [objectiveWeights, setObjectiveWeights] = useState({
+    waiting: '1',
+    lateness: '20',
+    flush_volume: '1',
+    valves: '2',
+    shared_headers: '3',
+  });
+  const nodes = terminal.data?.document.nodes ?? [];
+  const products = terminal.data?.document.products ?? [];
+  const curvePumps = (terminal.data?.document.elements ?? []).filter(
+    (element) => element.type === 'PUMP' && element.performance_curve,
+  );
+  const prepare = useMutation({
+    mutationFn: (scenario: OptimizationScenario) => {
+      if (!terminalId) throw new Error('Select a terminal first.');
+      return prepareOptimization(terminalId, scenario);
+    },
+    onSuccess: (result, scenario) => {
+      setPreparation(result);
+      setPreparedScenario(scenario);
+      setOptimizationResult(null);
+    },
+  });
+  const optimize = useMutation({
+    mutationFn: (scenario: OptimizationScenario) => {
+      if (!terminalId) throw new Error('Select a terminal first.');
+      return optimizeTerminal(terminalId, scenario);
+    },
+    onSuccess: setOptimizationResult,
+  });
+
+  useEffect(() => {
+    setPreparation(null);
+    setPreparedScenario(null);
+    setOptimizationResult(null);
+    setFocusedRoute(null);
+  }, [terminalId, setFocusedRoute]);
+
+  function updateJob(jobId: string, patch: Partial<OptimizationJobDraft>) {
+    setPreparation(null);
+    setPreparedScenario(null);
+    setOptimizationResult(null);
+    setJobs((current) => current.map((job) => (job.id === jobId ? { ...job, ...patch } : job)));
+  }
+
+  function submitPreparation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!terminalId || !terminal.data) return;
+    const scenario: OptimizationScenario = {
+      terminal_version: terminal.data.version,
+      horizon_start: new Date(horizonStart).toISOString(),
+      horizon_minutes: Number(horizonMinutes),
+      objective_weights: {
+        waiting: Number(objectiveWeights.waiting),
+        lateness: Number(objectiveWeights.lateness),
+        flush_volume: Number(objectiveWeights.flush_volume),
+        valves: Number(objectiveWeights.valves),
+        shared_headers: Number(objectiveWeights.shared_headers),
+      },
+      time_limit_seconds: 30,
+      random_seed: 1,
+      jobs: jobs.map((job) => ({
+        id: job.id,
+        direction: job.direction,
+        product_id: job.productId,
+        source_ids: [job.sourceId],
+        destination_ids: [job.destinationId],
+        volume_m3: Number(job.volume),
+        rate_m3h: Number(job.rate),
+        earliest_start_min: Number(job.earliestStart),
+        due_min: Number(job.due),
+        pump_suction_inputs: curvePumps
+          .filter((pump) => job.pumpSuctionInputs[pump.id]?.trim())
+          .map((pump) => ({
+            pump_id: pump.id,
+            npsh_available_m: Number(job.pumpSuctionInputs[pump.id]),
+          })),
+      })),
+    };
+    prepare.mutate(scenario);
+  }
+
+  function updateObjectiveWeight(key: keyof typeof objectiveWeights, value: string) {
+    setObjectiveWeights((current) => ({ ...current, [key]: value }));
+    setPreparation(null);
+    setPreparedScenario(null);
+    setOptimizationResult(null);
+  }
+
+  return (
+    <>
+      <PageHeading
+        eyebrow="OPERATIONS PLANNING"
+        title="Optimization"
+        summary={
+          terminal.data
+            ? `${terminal.data.name} · V${terminal.data.version}`
+            : 'Multi-job line-up workspace'
+        }
+        action={
+          terminalId ? (
+            <Link className="text-action" to={`/designer/${terminalId}`}>
+              Terminal graph <ArrowUpRight size={16} />
+            </Link>
+          ) : null
+        }
+      />
+      <div className="planner-terminal-picker">
+        <label>
+          Terminal
+          <select
+            value={terminalId ?? ''}
+            onChange={(event) => setActiveTerminal(event.target.value || null)}
+          >
+            <option value="">Select terminal</option>
+            {(terminals.data ?? []).map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} · {item.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {terminals.isError && <span role="alert">{terminals.error.message}</span>}
+      </div>
+      {!terminalId ? (
+        <div className="register-message">
+          Select a terminal to prepare an optimization scenario.
+        </div>
+      ) : terminal.isLoading ? (
+        <div className="register-message">
+          <LoaderCircle className="spin" size={18} /> Loading terminal
+        </div>
+      ) : terminal.isError ? (
+        <div className="register-message error-message" role="alert">
+          {terminal.error.message}
+        </div>
+      ) : terminal.data ? (
+        <div className="optimization-workspace">
+          <form className="optimization-scenario" onSubmit={submitPreparation}>
+            <div className="planner-form-heading">
+              <span className="eyebrow">STAGE 2 · SCENARIO</span>
+              <strong>Jobs to schedule</strong>
+            </div>
+            <div className="optimization-horizon">
+              <label>
+                Horizon starts
+                <input
+                  required
+                  type="datetime-local"
+                  value={horizonStart}
+                  onChange={(event) => {
+                    setHorizonStart(event.target.value);
+                    setPreparation(null);
+                    setPreparedScenario(null);
+                    setOptimizationResult(null);
+                  }}
+                />
+              </label>
+              <label>
+                Horizon (min)
+                <input
+                  min="1"
+                  max="10080"
+                  required
+                  step="1"
+                  type="number"
+                  value={horizonMinutes}
+                  onChange={(event) => {
+                    setHorizonMinutes(event.target.value);
+                    setPreparation(null);
+                    setPreparedScenario(null);
+                    setOptimizationResult(null);
+                  }}
+                />
+              </label>
+            </div>
+            <details className="optimization-weights">
+              <summary>Objective weights</summary>
+              <div className="optimization-weight-grid">
+                <label>
+                  Waiting
+                  <input
+                    min="0"
+                    max="1000"
+                    step="1"
+                    type="number"
+                    value={objectiveWeights.waiting}
+                    onChange={(event) => updateObjectiveWeight('waiting', event.target.value)}
+                  />
+                </label>
+                <label>
+                  Lateness
+                  <input
+                    min="0"
+                    max="1000"
+                    step="1"
+                    type="number"
+                    value={objectiveWeights.lateness}
+                    onChange={(event) => updateObjectiveWeight('lateness', event.target.value)}
+                  />
+                </label>
+                <label>
+                  Flush volume
+                  <input
+                    min="0"
+                    max="1000"
+                    step="1"
+                    type="number"
+                    value={objectiveWeights.flush_volume}
+                    onChange={(event) => updateObjectiveWeight('flush_volume', event.target.value)}
+                  />
+                </label>
+                <label>
+                  Valves
+                  <input
+                    min="0"
+                    max="1000"
+                    step="1"
+                    type="number"
+                    value={objectiveWeights.valves}
+                    onChange={(event) => updateObjectiveWeight('valves', event.target.value)}
+                  />
+                </label>
+                <label>
+                  Shared headers
+                  <input
+                    min="0"
+                    max="1000"
+                    step="1"
+                    type="number"
+                    value={objectiveWeights.shared_headers}
+                    onChange={(event) =>
+                      updateObjectiveWeight('shared_headers', event.target.value)
+                    }
+                  />
+                </label>
+              </div>
+            </details>
+            <div className="optimization-job-list">
+              {jobs.map((job, index) => (
+                <section className="optimization-job" key={job.id} aria-label={`Job ${index + 1}`}>
+                  <div className="optimization-job-heading">
+                    <strong>Job {String(index + 1).padStart(2, '0')}</strong>
+                    <button
+                      aria-label={`Remove job ${job.id}`}
+                      disabled={jobs.length <= 1}
+                      title="Remove job"
+                      type="button"
+                      onClick={() => {
+                        setJobs((current) => current.filter((item) => item.id !== job.id));
+                        setPreparation(null);
+                        setPreparedScenario(null);
+                        setOptimizationResult(null);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <div className="optimization-job-grid">
+                    <label>
+                      Job ID
+                      <input
+                        required
+                        value={job.id}
+                        onChange={(event) => updateJob(job.id, { id: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Direction
+                      <select
+                        value={job.direction}
+                        onChange={(event) =>
+                          updateJob(job.id, {
+                            direction: event.target.value as PlannerFormState['direction'],
+                          })
+                        }
+                      >
+                        <option value="IN">Inbound</option>
+                        <option value="OUT">Outbound</option>
+                        <option value="TRANSFER">Transfer</option>
+                      </select>
+                    </label>
+                    <label>
+                      Product
+                      <select
+                        required
+                        value={job.productId}
+                        onChange={(event) => updateJob(job.id, { productId: event.target.value })}
+                      >
+                        <option value="">Select product</option>
+                        {products.map((product) => (
+                          <option key={product.id} value={product.id}>
+                            {product.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Source
+                      <select
+                        required
+                        value={job.sourceId}
+                        onChange={(event) => updateJob(job.id, { sourceId: event.target.value })}
+                      >
+                        <option value="">Select source</option>
+                        {nodes.map((node) => (
+                          <option key={node.id} value={node.id}>
+                            {node.name ?? node.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Destination
+                      <select
+                        required
+                        value={job.destinationId}
+                        onChange={(event) =>
+                          updateJob(job.id, { destinationId: event.target.value })
+                        }
+                      >
+                        <option value="">Select destination</option>
+                        {nodes.map((node) => (
+                          <option key={node.id} value={node.id}>
+                            {node.name ?? node.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Volume (m³)
+                      <input
+                        min="0.1"
+                        required
+                        step="any"
+                        type="number"
+                        value={job.volume}
+                        onChange={(event) => updateJob(job.id, { volume: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Minimum rate (m³/h)
+                      <input
+                        min="0.1"
+                        required
+                        step="any"
+                        type="number"
+                        value={job.rate}
+                        onChange={(event) => updateJob(job.id, { rate: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      Earliest start (min)
+                      <input
+                        min="0"
+                        required
+                        step="1"
+                        type="number"
+                        value={job.earliestStart}
+                        onChange={(event) =>
+                          updateJob(job.id, { earliestStart: event.target.value })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Due (min)
+                      <input
+                        min="0"
+                        required
+                        step="1"
+                        type="number"
+                        value={job.due}
+                        onChange={(event) => updateJob(job.id, { due: event.target.value })}
+                      />
+                    </label>
+                  </div>
+                  {curvePumps.length > 0 && (
+                    <details className="optimization-suction">
+                      <summary>Pump suction inputs</summary>
+                      {curvePumps.map((pump) => (
+                        <label key={pump.id}>
+                          {pump.id} · available NPSH (m)
+                          <input
+                            min="0"
+                            step="any"
+                            type="number"
+                            value={job.pumpSuctionInputs[pump.id] ?? ''}
+                            onChange={(event) =>
+                              updateJob(job.id, {
+                                pumpSuctionInputs: {
+                                  ...job.pumpSuctionInputs,
+                                  [pump.id]: event.target.value,
+                                },
+                              })
+                            }
+                          />
+                        </label>
+                      ))}
+                    </details>
+                  )}
+                </section>
+              ))}
+            </div>
+            <div className="optimization-form-actions">
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => {
+                  setJobs((current) => [
+                    ...current,
+                    createOptimizationJob(`job-${crypto.randomUUID().slice(0, 8)}`),
+                  ]);
+                  setPreparation(null);
+                  setPreparedScenario(null);
+                  setOptimizationResult(null);
+                }}
+              >
+                <Plus size={14} /> Add job
+              </button>
+              <button className="primary-action" disabled={prepare.isPending} type="submit">
+                {prepare.isPending ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <RouteIcon size={16} />
+                )}
+                Prepare candidates
+              </button>
+            </div>
+            {prepare.isError && (
+              <p className="form-error" role="alert">
+                {prepare.error.message}
+              </p>
+            )}
+          </form>
+          <section className="optimization-review" aria-label="Candidate review" aria-live="polite">
+            <div className="planner-results-heading">
+              <div>
+                <span className="eyebrow">STAGE 1 · CANDIDATE REVIEW</span>
+                <strong>
+                  {preparation
+                    ? `${preparation.jobs.filter((job) => job.routes.length > 0).length}/${preparation.jobs.length} jobs routable`
+                    : 'No scenario prepared'}
+                </strong>
+              </div>
+              {preparation && <span>Terminal V{preparation.terminal_version}</span>}
+            </div>
+            {!preparation ? (
+              <p className="planner-empty">
+                Prepare the job set to inspect route candidates and blockers.
+              </p>
+            ) : (
+              <div className="optimization-review-list">
+                {preparedScenario && (
+                  <button
+                    className="primary-action optimization-run"
+                    disabled={
+                      optimize.isPending || preparation.jobs.some((job) => job.routes.length === 0)
+                    }
+                    type="button"
+                    onClick={() => optimize.mutate(preparedScenario)}
+                  >
+                    {optimize.isPending ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <CalendarDays size={15} />
+                    )}
+                    Optimize lineup
+                  </button>
+                )}
+                {preparation.jobs.map((job) => (
+                  <section className="optimization-review-job" key={job.job_id}>
+                    <div className="optimization-job-heading">
+                      <strong>{job.job_id}</strong>
+                      <span>{job.routes.length} candidate routes</span>
+                    </div>
+                    {job.routes.map((route) => (
+                      <button
+                        className="optimization-candidate"
+                        key={`${job.job_id}-${route.rank}-${route.source_id}-${route.destination_id}`}
+                        type="button"
+                        onClick={() =>
+                          setFocusedRoute({
+                            terminalId,
+                            elementIds: route.steps.map((step) => step.element_id),
+                          })
+                        }
+                      >
+                        <strong>
+                          Route {route.rank} · {route.source_id} → {route.destination_id}
+                        </strong>
+                        <span>
+                          {route.metrics.total_min} min ·{' '}
+                          {route.steps.map((step) => step.element_id).join(' → ')}
+                        </span>
+                      </button>
+                    ))}
+                    {job.blockers.length > 0 && (
+                      <details className="route-exclusions" open={job.routes.length === 0}>
+                        <summary>{job.blockers.length} route blockers · criteria</summary>
+                        {job.blockers.map((blocker, index) => (
+                          <RouteExclusionDetail
+                            exclusion={blocker}
+                            key={`${job.job_id}-${blocker.element_id ?? blocker.node_id ?? 'blocker'}-${index}`}
+                            onFocus={(elementId) =>
+                              setFocusedRoute({ terminalId, elementIds: [elementId] })
+                            }
+                          />
+                        ))}
+                      </details>
+                    )}
+                  </section>
+                ))}
+              </div>
+            )}
+            {optimize.isError && (
+              <p className="form-error" role="alert">
+                {optimize.error.message}
+              </p>
+            )}
+            {optimizationResult && (
+              <section className="optimization-solve-result" aria-label="Optimization result">
+                <div className="optimization-solve-heading">
+                  <strong>{optimizationResult.status}</strong>
+                  <span>
+                    {optimizationResult.objective == null
+                      ? 'No objective'
+                      : `Objective ${optimizationResult.objective}`}
+                    {optimizationResult.best_bound != null &&
+                      ` · bound ${optimizationResult.best_bound}`}
+                  </span>
+                </div>
+                <p className="optimization-result-detail">{optimizationResult.detail}</p>
+                <dl className="optimization-kpis">
+                  <div>
+                    <dt>On time</dt>
+                    <dd>{optimizationResult.kpis.on_time_jobs}</dd>
+                  </div>
+                  <div>
+                    <dt>Lateness</dt>
+                    <dd>{optimizationResult.kpis.total_lateness_min} min</dd>
+                  </div>
+                  <div>
+                    <dt>Waiting</dt>
+                    <dd>{optimizationResult.kpis.waiting_min} min</dd>
+                  </div>
+                  <div>
+                    <dt>Makespan</dt>
+                    <dd>{optimizationResult.kpis.makespan_min} min</dd>
+                  </div>
+                </dl>
+                {optimizationResult.scheduled_jobs.map((scheduled) => (
+                  <button
+                    className="optimization-scheduled-job"
+                    key={scheduled.job_id}
+                    type="button"
+                    onClick={() =>
+                      setFocusedRoute({
+                        terminalId,
+                        elementIds: scheduled.route.steps.map((step) => step.element_id),
+                      })
+                    }
+                  >
+                    <strong>
+                      {scheduled.job_id} · {scheduled.start_min}–{scheduled.end_min} min
+                    </strong>
+                    <span>
+                      Route {scheduled.route.rank} ·{' '}
+                      {scheduled.route.steps.map((step) => step.element_id).join(' → ')}
+                      {scheduled.late_min > 0 && ` · ${scheduled.late_min} min late`}
+                    </span>
+                  </button>
+                ))}
+                {optimizationResult.unscheduled_jobs.map((unscheduled) => (
+                  <details className="optimization-unscheduled" key={unscheduled.job_id} open>
+                    <summary>
+                      {unscheduled.job_id} · {unscheduled.detail}
+                    </summary>
+                    {unscheduled.conflict_elements.length > 0 && (
+                      <p>Conflicting resources: {unscheduled.conflict_elements.join(', ')}</p>
+                    )}
+                    {unscheduled.blockers.map((blocker, index) => (
+                      <RouteExclusionDetail
+                        exclusion={blocker}
+                        key={`${unscheduled.job_id}-${index}`}
+                        onFocus={(elementId) =>
+                          setFocusedRoute({ terminalId, elementIds: [elementId] })
+                        }
+                      />
+                    ))}
+                  </details>
+                ))}
+                {optimizationResult.element_timeline.length > 0 && (
+                  <details className="optimization-timeline">
+                    <summary>
+                      {optimizationResult.element_timeline.length} element uses · timeline
+                    </summary>
+                    {optimizationResult.element_timeline.map((use, index) => (
+                      <div key={`${use.element_id}-${use.job_id}-${index}`}>
+                        <strong>{use.element_id}</strong>
+                        <span>
+                          {use.start_min}–{use.end_min} min · {use.job_id} · {use.product_id}
+                        </span>
+                      </div>
+                    ))}
+                  </details>
+                )}
+              </section>
+            )}
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function RoutePlannerPage() {
+  const terminalId = useWorkspaceStore((state) => state.activeTerminalId);
+  const setActiveTerminal = useWorkspaceStore((state) => state.setActiveTerminal);
+  const setFocusedRoute = useWorkspaceStore((state) => state.setFocusedRoute);
+  const queryClient = useQueryClient();
+  const terminals = useQuery({ queryKey: ['terminals'], queryFn: listTerminals });
+  const [form, setForm] = useState<PlannerFormState>({
+    direction: 'IN',
+    productId: '',
+    sourceId: '',
+    destinationId: '',
+    volume: '4000',
+    rate: '1000',
+    windowFrom: localDateTimeInputValue(),
+    windowTo: '',
+  });
+  const [result, setResult] = useState<RouteResponse | null>(null);
+  const [routeRequest, setRouteRequest] = useState<RouteRequest | null>(null);
+  const [selectedRank, setSelectedRank] = useState<number | null>(null);
+  const [confirmationMessage, setConfirmationMessage] = useState('');
+  const terminal = useQuery({
+    queryKey: ['terminal', terminalId],
+    queryFn: () => getTerminal(terminalId!),
+    enabled: terminalId !== null,
+  });
+  const confirmedRoutes = useQuery({
+    queryKey: ['confirmed-routes', terminalId],
+    queryFn: () => listConfirmedRoutes(terminalId!),
+    enabled: terminalId !== null,
+  });
+  useEffect(() => {
+    setResult(null);
+    setRouteRequest(null);
+    setSelectedRank(null);
+    setConfirmationMessage('');
+    setPumpSuctionInputs({});
+    setFocusedRoute(null);
+  }, [terminalId, setFocusedRoute]);
+  const nodeChoices = terminal.data?.document.nodes ?? [];
+  const productChoices = terminal.data?.document.products ?? [];
+  const selectedSource = nodeChoices.find((node) => node.id === form.sourceId);
+  const selectedDestination = nodeChoices.find((node) => node.id === form.destinationId);
+  const selectedProduct = productChoices.find((product) => product.id === form.productId);
+  const endpointRateLimits = [
+    selectedSource?.max_rate_m3h,
+    selectedDestination?.max_rate_m3h,
+  ].filter((rate): rate is number => rate != null);
+  const endpointRateLimit = endpointRateLimits.length > 0 ? Math.min(...endpointRateLimits) : null;
+  const curvePumps = (terminal.data?.document.elements ?? []).filter(
+    (element) => element.type === 'PUMP' && element.performance_curve,
+  );
+  const [pumpSuctionInputs, setPumpSuctionInputs] = useState<Record<string, string>>({});
+  const updateField = <K extends keyof PlannerFormState>(key: K, value: PlannerFormState[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+  const search = useMutation({
+    mutationFn: ({ request }: { request: RouteRequest }) => requestRoutes(terminalId!, request),
+    onSuccess: (response, variables) => {
+      setResult(response);
+      setRouteRequest(variables.request);
+      setConfirmationMessage('');
+      const first = response.routes[0];
+      setSelectedRank(first?.rank ?? null);
+      setFocusedRoute(
+        first
+          ? { terminalId: terminalId!, elementIds: first.steps.map((step) => step.element_id) }
+          : null,
+      );
+    },
+  });
+  const confirm = useMutation({
+    mutationFn: () => {
+      const selected = result?.routes.find((route) => route.rank === selectedRank);
+      if (!terminalId || !routeRequest || !selected)
+        throw new Error('Select a feasible route first.');
+      return confirmTerminalRoute(terminalId, routeRequest, selected);
+    },
+    onSuccess: async (confirmed) => {
+      setConfirmationMessage(
+        `Route ${confirmed.route.rank} confirmed against version ${confirmed.terminal_version}.`,
+      );
+      await queryClient.invalidateQueries({ queryKey: ['confirmed-routes', terminalId] });
+    },
+  });
+
+  function submitRoute(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!terminalId || !form.sourceId || !form.destinationId || !form.productId) return;
+    const request: RouteRequest = {
+      direction: form.direction,
+      product_id: form.productId,
+      volume_m3: Number(form.volume),
+      rate_m3h: Number(form.rate),
+      window_from: new Date(form.windowFrom).toISOString(),
+      ...(form.windowTo ? { window_to: new Date(form.windowTo).toISOString() } : {}),
+      source_ids: [form.sourceId],
+      destination_ids: [form.destinationId],
+      max_routes: 5,
+      ...(curvePumps.some((pump) => pumpSuctionInputs[pump.id]?.trim())
+        ? {
+            pump_suction_inputs: curvePumps
+              .filter((pump) => pumpSuctionInputs[pump.id]?.trim())
+              .map((pump) => ({
+                pump_id: pump.id,
+                npsh_available_m: Number(pumpSuctionInputs[pump.id]),
+              })),
+          }
+        : {}),
+    };
+    search.mutate({ request });
+  }
+
+  const selectedRoute = result?.routes.find((route) => route.rank === selectedRank);
+  return (
+    <>
+      <PageHeading
+        eyebrow="OPERATIONS PLANNING"
+        title="Route planner"
+        summary={
+          terminal.data
+            ? `${terminal.data.name} · V${terminal.data.version}`
+            : 'Transfer route workspace'
+        }
+        action={
+          terminalId ? (
+            <Link className="text-action" to={`/designer/${terminalId}`}>
+              Terminal graph <ArrowUpRight size={16} />
+            </Link>
+          ) : null
+        }
+      />
+      <div className="planner-terminal-picker">
+        <label>
+          Terminal
+          <select
+            value={terminalId ?? ''}
+            onChange={(event) => setActiveTerminal(event.target.value || null)}
+          >
+            <option value="">Select terminal</option>
+            {(terminals.data ?? []).map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} · {item.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {terminals.isError && <span role="alert">{terminals.error.message}</span>}
+      </div>
+      {!terminalId ? (
+        <div className="register-message">Select a terminal to prepare a route request.</div>
+      ) : terminal.isLoading ? (
+        <div className="register-message">
+          <LoaderCircle className="spin" size={18} /> Loading terminal
+        </div>
+      ) : terminal.isError ? (
+        <div className="register-message error-message" role="alert">
+          {terminal.error.message}
+        </div>
+      ) : (
+        <div className="planner-grid">
+          <form className="planner-form" onSubmit={submitRoute}>
+            <div className="planner-form-heading">
+              <span className="eyebrow">SINGLE OPERATION</span>
+              <strong>Route request</strong>
+            </div>
+            <label>
+              Direction
+              <select
+                value={form.direction}
+                onChange={(event) =>
+                  updateField('direction', event.target.value as PlannerFormState['direction'])
+                }
+              >
+                <option value="IN">Inbound</option>
+                <option value="OUT">Outbound</option>
+                <option value="TRANSFER">Transfer</option>
+              </select>
+            </label>
+            <label>
+              Product
+              <select
+                required
+                value={form.productId}
+                onChange={(event) => updateField('productId', event.target.value)}
+              >
+                <option value="">Select product</option>
+                {productChoices.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Source
+              <select
+                required
+                value={form.sourceId}
+                onChange={(event) => updateField('sourceId', event.target.value)}
+              >
+                <option value="">Select source</option>
+                {nodeChoices.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name ?? node.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Destination
+              <select
+                required
+                value={form.destinationId}
+                onChange={(event) => updateField('destinationId', event.target.value)}
+              >
+                <option value="">Select destination</option>
+                {nodeChoices.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name ?? node.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="planner-number-fields">
+              <label>
+                Volume (m³)
+                <input
+                  min="0.1"
+                  step="any"
+                  required
+                  type="number"
+                  value={form.volume}
+                  onChange={(event) => updateField('volume', event.target.value)}
+                />
+              </label>
+              <label>
+                Rate (m³/h)
+                <input
+                  min="0.1"
+                  step="any"
+                  required
+                  type="number"
+                  value={form.rate}
+                  onChange={(event) => updateField('rate', event.target.value)}
+                />
+              </label>
+            </div>
+            <label>
+              Window starts
+              <input
+                required
+                type="datetime-local"
+                value={form.windowFrom}
+                onChange={(event) => updateField('windowFrom', event.target.value)}
+              />
+            </label>
+            <label>
+              Window ends
+              <input
+                type="datetime-local"
+                value={form.windowTo}
+                onChange={(event) => updateField('windowTo', event.target.value)}
+              />
+            </label>
+            <section
+              className="planner-constraints"
+              aria-label="Constraints applied to this request"
+            >
+              <strong>Criteria in force</strong>
+              <dl>
+                <div>
+                  <dt>Rate</dt>
+                  <dd>
+                    {form.rate || '—'} m³/h minimum
+                    {endpointRateLimit != null && ` · endpoint limit ${endpointRateLimit} m³/h`}
+                    {selectedProduct?.max_velocity != null &&
+                      ` · ${selectedProduct.max_velocity} m/s velocity cap`}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Endpoints</dt>
+                  <dd>
+                    {selectedSource
+                      ? `${selectedSource.id}: ${selectedSource.type === 'TANK' ? `${selectedSource.stock_m3 ?? 0} m³ stock` : 'source direction and product certification'}`
+                      : 'Select a source'}
+                    {' · '}
+                    {selectedDestination
+                      ? `${selectedDestination.id}: ${selectedDestination.type === 'TANK' ? `${Math.max(0, (selectedDestination.capacity_m3 ?? 0) - (selectedDestination.stock_m3 ?? 0))} m³ free` : 'destination direction and product certification'}`
+                      : 'select a destination'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Equipment</dt>
+                  <dd>
+                    Product certification and availability are enforced for the full job window.
+                    {curvePumps.length > 0 &&
+                      ` Curve pumps require an in-range operating point and NPSHa at least NPSHr plus margin (${curvePumps.map((pump) => `${pump.id}: ${pump.npsh_required_m ?? 'unset'} + ${pump.npsh_margin_m ?? 0.5} m`).join('; ')}).`}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+            {curvePumps.length > 0 && (
+              <div className="planner-suction-inputs">
+                <strong>Curve pump suction</strong>
+                {curvePumps.map((pump) => (
+                  <label key={pump.id}>
+                    {pump.id} · available NPSH (m)
+                    <input
+                      min="0"
+                      step="any"
+                      type="number"
+                      value={pumpSuctionInputs[pump.id] ?? ''}
+                      onChange={(event) =>
+                        setPumpSuctionInputs((current) => ({
+                          ...current,
+                          [pump.id]: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+            <button
+              className="primary-action planner-submit"
+              disabled={search.isPending || !terminal.data}
+              type="submit"
+            >
+              {search.isPending ? (
+                <LoaderCircle className="spin" size={16} />
+              ) : (
+                <RouteIcon size={16} />
+              )}
+              Find feasible routes
+            </button>
+            {search.isError && (
+              <p className="form-error" role="alert">
+                {search.error.message}
+              </p>
+            )}
+          </form>
+          <section className="planner-results" aria-label="Route results" aria-live="polite">
+            <div className="planner-results-heading">
+              <div>
+                <span className="eyebrow">FEASIBILITY SHORTLIST</span>
+                <strong>{result ? `${result.routes.length} routes` : 'No request yet'}</strong>
+              </div>
+              {result && (
+                <span>
+                  V{result.terminal_version} · Engine {result.engine_version}
+                </span>
+              )}
+            </div>
+            {!result ? (
+              <p className="planner-empty">
+                Choose the operation endpoints and product to calculate a route.
+              </p>
+            ) : result.routes.length === 0 ? (
+              <div className="no-route-result">
+                <strong>{result.no_route?.message ?? 'No feasible route found.'}</strong>
+                {(result.no_route?.blockers.length ? result.no_route.blockers : result.exclusions)
+                  .length > 0 && (
+                  <details className="route-exclusions" open>
+                    <summary>
+                      Review {result.no_route?.blockers.length || result.exclusions.length} rejected
+                      criteria
+                    </summary>
+                    {(result.no_route?.blockers.length
+                      ? result.no_route.blockers
+                      : result.exclusions
+                    ).map((exclusion, index) => (
+                      <RouteExclusionDetail
+                        exclusion={exclusion}
+                        key={`${exclusion.element_id ?? exclusion.node_id ?? 'issue'}-${index}`}
+                        onFocus={(elementId) =>
+                          setFocusedRoute({ terminalId, elementIds: [elementId] })
+                        }
+                      />
+                    ))}
+                  </details>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="route-shortlist">
+                  {result.routes.map((route) => (
+                    <button
+                      aria-pressed={selectedRank === route.rank}
+                      className={`route-choice${selectedRank === route.rank ? ' is-selected' : ''}`}
+                      key={`${route.rank}-${route.source_id}-${route.destination_id}`}
+                      type="button"
+                      onClick={() => {
+                        setSelectedRank(route.rank);
+                        setConfirmationMessage('');
+                        setFocusedRoute({
+                          terminalId,
+                          elementIds: route.steps.map((step) => step.element_id),
+                        });
+                      }}
+                    >
+                      <span className="route-choice-rank">
+                        {String(route.rank).padStart(2, '0')}
+                      </span>
+                      <span className="route-choice-body">
+                        <strong>
+                          {route.metrics.total_min} min · {route.source_id} to{' '}
+                          {route.destination_id}
+                        </strong>
+                        <span>{route.steps.map((step) => step.element_id).join(' → ')}</span>
+                      </span>
+                      <span className="route-choice-metrics">
+                        <span>Flush {route.metrics.flush_volume_m3} m³</span>
+                        <span>
+                          {route.metrics.valves} valves · {route.metrics.common_headers} shared
+                        </span>
+                        {route.metrics.operating_flow_m3h != null && (
+                          <span>Operating {route.metrics.operating_flow_m3h.toFixed(1)} m³/h</span>
+                        )}
+                        {route.metrics.pump_head_m != null && (
+                          <span>Pump {route.metrics.pump_head_m.toFixed(1)} m head</span>
+                        )}
+                        {route.metrics.system_head_m != null && (
+                          <span>System {route.metrics.system_head_m.toFixed(1)} m head</span>
+                        )}
+                        {route.metrics.suction_margin_m != null && (
+                          <span>Suction margin {route.metrics.suction_margin_m.toFixed(1)} m</span>
+                        )}
+                        {route.metrics.pump_speed_ratio != null && (
+                          <span>Speed {(route.metrics.pump_speed_ratio * 100).toFixed(0)}%</span>
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {result.exclusions.length > 0 && (
+                  <details className="route-exclusions">
+                    <summary>{result.exclusions.length} excluded items · view criteria</summary>
+                    {result.exclusions.map((exclusion, index) => (
+                      <RouteExclusionDetail
+                        exclusion={exclusion}
+                        key={`${exclusion.element_id ?? exclusion.node_id ?? 'issue'}-${index}`}
+                        onFocus={(elementId) =>
+                          setFocusedRoute({ terminalId, elementIds: [elementId] })
+                        }
+                      />
+                    ))}
+                  </details>
+                )}
+                {selectedRoute && (
+                  <div className="route-confirm-bar">
+                    <span>
+                      Route {selectedRoute.rank} selected ·{' '}
+                      {selectedRoute.metrics.head_margin_m.toFixed(1)} m head margin
+                    </span>
+                    <button
+                      className="primary-action"
+                      disabled={confirm.isPending}
+                      type="button"
+                      onClick={() => confirm.mutate()}
+                    >
+                      {confirm.isPending ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <Save size={15} />
+                      )}
+                      Confirm route
+                    </button>
+                  </div>
+                )}
+                {confirmationMessage && (
+                  <p className="version-status" role="status">
+                    {confirmationMessage}
+                  </p>
+                )}
+                {confirm.isError && (
+                  <p className="form-error" role="alert">
+                    {confirm.error.message}
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
+      {confirmedRoutes.data && confirmedRoutes.data.length > 0 && (
+        <section className="confirmed-routes" aria-label="Confirmed routes">
+          <div className="confirmed-routes-heading">
+            <strong>Confirmed routes</strong>
+            <span>{confirmedRoutes.data.length}</span>
+          </div>
+          {confirmedRoutes.data.map((confirmed) => (
+            <button
+              className="confirmed-route-row"
+              key={confirmed.id}
+              type="button"
+              onClick={() =>
+                setFocusedRoute({
+                  terminalId: terminalId!,
+                  elementIds: confirmed.route.steps.map((step) => step.element_id),
+                })
+              }
+            >
+              <strong>Route {confirmed.route.rank}</strong>
+              <span>
+                V{confirmed.terminal_version} · {confirmed.route.metrics.total_min} min
+              </span>
+              {confirmed.outdated && <span className="confirmed-outdated">OUTDATED</span>}
+              <time dateTime={confirmed.created_at}>
+                {new Date(confirmed.created_at).toLocaleString()}
+              </time>
+            </button>
+          ))}
+        </section>
+      )}
+    </>
+  );
+}
+
 const NODE_TYPES: TerminalNode['type'][] = [
   'TANK',
   'JETTY',
@@ -346,10 +2192,19 @@ function DesignerEntry() {
 
 function TerminalDesigner() {
   const { terminalId = '' } = useParams();
+  const setActiveTerminal = useWorkspaceStore((state) => state.setActiveTerminal);
   const terminal = useQuery({
     queryKey: ['terminal', terminalId],
     queryFn: () => getTerminal(terminalId),
   });
+
+  // The designer only ever edits the session's active terminal: the URL is the explicit choice,
+  // so record it once (persisted) and keep the topbar and designer in agreement.
+  useEffect(() => {
+    if (terminalId && useWorkspaceStore.getState().activeTerminalId !== terminalId) {
+      setActiveTerminal(terminalId);
+    }
+  }, [terminalId, setActiveTerminal]);
 
   if (terminal.isLoading)
     return (
@@ -459,7 +2314,7 @@ function nearestPort(node: TerminalNode, position: Point, target: Point): Point 
 }
 
 function EquipmentGlyph({ type, color }: { type: TerminalNode['type']; color: string }) {
-  const common = { fill: color, stroke: '#31564d', strokeWidth: 2 };
+  const common = { fill: color, stroke: '#532a85', strokeWidth: 2 };
   switch (type) {
     case 'TANK':
       return (
@@ -468,7 +2323,7 @@ function EquipmentGlyph({ type, color }: { type: TerminalNode['type']; color: st
           <ellipse cx="0" cy="-17" rx="34" ry="9" />
           <ellipse cx="0" cy="20" rx="34" ry="9" />
           <path d="M-24 -17v37M24 -17v37" fill="none" />
-          <ellipse cx="0" cy="-17" rx="24" ry="5" fill="#edf5f1" />
+          <ellipse cx="0" cy="-17" rx="24" ry="5" fill="#eef0f6" />
         </g>
       );
     case 'JETTY':
@@ -483,7 +2338,7 @@ function EquipmentGlyph({ type, color }: { type: TerminalNode['type']; color: st
       return (
         <g className="glyph-loading" {...common}>
           <path d="M-38 18h76v9h-76zM-29 18v-25h12v25M-17 -7h40l14 12" />
-          <circle cx="37" cy="6" r="5" fill="#edf5f1" />
+          <circle cx="37" cy="6" r="5" fill="#eef0f6" />
           <path d="M-23 27v8M23 27v8" fill="none" />
         </g>
       );
@@ -491,15 +2346,15 @@ function EquipmentGlyph({ type, color }: { type: TerminalNode['type']; color: st
       return (
         <g className="glyph-platform" {...common}>
           <path d="M-48 -5h96v12h-96zM-39 7v18M39 7v18M-52 26h104M-44 31h88" />
-          <path d="M-35 14h70M-30 18h60" fill="none" stroke="#31564d" />
+          <path d="M-35 14h70M-30 18h60" fill="none" stroke="#532a85" />
         </g>
       );
     case 'RAIL_CAR':
       return (
         <g className="glyph-car" {...common}>
           <path d="M-39 -4h78v23h-78zM-30 -4v-13h18v13M-8 -4v-13h18v13M14 -4v-13h17v13" />
-          <circle cx="-23" cy="23" r="6" fill="#31564d" />
-          <circle cx="23" cy="23" r="6" fill="#31564d" />
+          <circle cx="-23" cy="23" r="6" fill="#532a85" />
+          <circle cx="23" cy="23" r="6" fill="#532a85" />
         </g>
       );
     case 'MANIFOLD':
@@ -523,12 +2378,16 @@ function EquipmentGlyph({ type, color }: { type: TerminalNode['type']; color: st
 
 function TerminalGraphLayers({
   graph,
+  availabilityWindows,
   zoom,
   labelScale,
+  routeElementIds,
 }: {
   graph: TerminalGraph;
+  availabilityWindows: AvailabilityWindow[];
   zoom: number;
   labelScale: number;
+  routeElementIds: string[];
 }) {
   const positions = graph.nodes.map((node, index) => ({
     node,
@@ -537,6 +2396,12 @@ function TerminalGraphLayers({
   }));
   const positionById = new Map(positions.map(({ node, x, y }) => [node.id, { x, y }]));
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const availabilityByElement = new Map<string, AvailabilityWindow[]>();
+  for (const window of availabilityWindows) {
+    const existing = availabilityByElement.get(window.element_id) ?? [];
+    existing.push(window);
+    availabilityByElement.set(window.element_id, existing);
+  }
   const arcsByElement = new Map<string, TerminalGraph['arcs']>();
   for (const arc of graph.arcs) {
     const arcs = arcsByElement.get(arc.element_id) ?? [];
@@ -559,6 +2424,14 @@ function TerminalGraphLayers({
         parallelOffsets.set(element.id, (index - (group.length - 1) / 2) * 36);
       });
   }
+  const now = Date.now();
+  const availabilityLabels: Record<AvailabilityStatus, string> = {
+    AVAILABLE: 'OK',
+    MAINTENANCE: 'MAINT',
+    FLUSHING: 'FLUSH',
+    CLEANING: 'CLEAN',
+    OUT_OF_SERVICE: 'OFF',
+  };
 
   return (
     <g className="terminal-graph-layers">
@@ -573,7 +2446,7 @@ function TerminalGraphLayers({
           refY="4"
           viewBox="0 0 8 8"
         >
-          <path d="M0 0L8 4L0 8Z" fill="#31564d" />
+          <path d="M0 0L8 4L0 8Z" fill="#532a85" />
         </marker>
       </defs>
       {graph.elements.map((element) => {
@@ -594,16 +2467,46 @@ function TerminalGraphLayers({
         const forward = edgeArcs.find((arc) => !arc.reversed);
         const reverse = edgeArcs.find((arc) => arc.reversed);
         if (!forward) return null;
+        const windows = availabilityByElement.get(element.id) ?? [];
+        const activeWindow = windows.find((window) => {
+          const start = Date.parse(window.from);
+          const end = window.to ? Date.parse(window.to) : Number.POSITIVE_INFINITY;
+          return start <= now && now < end;
+        });
+        const nextWindow = windows
+          .filter((window) => Date.parse(window.from) > now)
+          .sort((left, right) => Date.parse(left.from) - Date.parse(right.from))[0];
+        const visibleWindow = activeWindow ?? nextWindow;
+        const unavailableNow = activeWindow !== undefined && activeWindow.status !== 'AVAILABLE';
         const color =
-          element.type === 'PUMP' ? '#bd7e20' : element.type === 'VALVE' ? '#46766c' : '#52796f';
+          element.type === 'PUMP' ? '#d98a00' : element.type === 'VALVE' ? '#5d57a2' : '#5d57a2';
         return (
-          <g className="graph-edge" key={element.id}>
+          <g
+            className={`graph-edge${routeElementIds.includes(element.id) ? ' is-route-highlight' : ''}`}
+            key={element.id}
+          >
             <path
               d={`M ${from.x} ${from.y} Q ${middleX} ${middleY} ${to.x} ${to.y}`}
               markerEnd={forward.traversable ? 'url(#graph-arrow)' : undefined}
               markerStart={reverse?.traversable ? 'url(#graph-arrow)' : undefined}
-              stroke={color}
+              stroke={unavailableNow ? '#a43d31' : color}
             />
+            {visibleWindow && (
+              <g
+                className={`graph-availability-marker${unavailableNow ? ' is-active' : ' is-scheduled'}`}
+                transform={`translate(${middleX} ${middleY + 18})`}
+              >
+                <title>
+                  {visibleWindow.status.replaceAll('_', ' ')} ·{' '}
+                  {visibleWindow.reason || 'No reason supplied'} ·{' '}
+                  {new Date(visibleWindow.from).toLocaleString()}
+                </title>
+                <rect x="-22" y="-7" width="44" height="14" rx="2" />
+                <text textAnchor="middle" y="3">
+                  {availabilityLabels[visibleWindow.status]}
+                </text>
+              </g>
+            )}
             {zoom >= 0.55 && (
               <text
                 className="graph-edge-label"
@@ -629,7 +2532,7 @@ function TerminalGraphLayers({
       })}
       {positions.map(({ node, x, y }) => (
         <g className="graph-node" key={node.id} transform={`translate(${x}, ${y})`}>
-          <EquipmentGlyph type={node.type} color="#c3d8ce" />
+          <EquipmentGlyph type={node.type} color="#c8d4e1" />
           <text className="node-name" x="0" y="51" style={{ fontSize: 13 * labelScale }}>
             {node.name ?? node.id}
           </text>
@@ -709,6 +2612,7 @@ function TerminalEditor({
   version: number;
 }) {
   const queryClient = useQueryClient();
+  const focusedRoute = useWorkspaceStore((state) => state.focusedRoute);
   const [history, setHistory] = useState(() => createHistory(structuredClone(initialDocument)));
   const document = history.present;
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -741,6 +2645,11 @@ function TerminalEditor({
   const terminalGraph = useQuery({
     queryKey: ['terminal-graph', terminalId, savedVersion],
     queryFn: () => getTerminalGraph(terminalId, savedVersion),
+    enabled: viewMode === 'graph',
+  });
+  const graphAvailability = useQuery({
+    queryKey: ['availability', terminalId],
+    queryFn: () => listAvailabilityWindows(terminalId),
     enabled: viewMode === 'graph',
   });
   useEffect(() => {
@@ -798,6 +2707,7 @@ function TerminalEditor({
     (link) => link.id === selectedConceptualLinkId,
   );
   const nodeById = new Map(document.nodes.map((node) => [node.id, node]));
+  const routeElementIds = focusedRoute?.terminalId === terminalId ? focusedRoute.elementIds : [];
   const elementGroups = new Map<string, TerminalElement[]>();
   for (const element of document.elements) {
     const endpoints = [element.from, element.to].sort();
@@ -920,7 +2830,7 @@ function TerminalEditor({
             from: connectFrom,
             to: node.id,
             label: 'Association',
-            color: '#87958f',
+            color: '#7d8b98',
           };
           commitDocument({
             ...document,
@@ -993,6 +2903,55 @@ function TerminalEditor({
     });
   }
 
+  function updatePumpCurve(curve: PerformanceCurve | undefined) {
+    if (!selectedElementId) return;
+    commitDocument({
+      ...document,
+      schema_version: '1.1',
+      elements: document.elements.map((element) =>
+        element.id === selectedElementId ? { ...element, performance_curve: curve } : element,
+      ),
+    });
+  }
+
+  function updatePumpElement(patch: Partial<TerminalElement>) {
+    if (!selectedElementId) return;
+    commitDocument({
+      ...document,
+      schema_version: '1.1',
+      elements: document.elements.map((element) =>
+        element.id === selectedElementId ? { ...element, ...patch } : element,
+      ),
+    });
+  }
+
+  function updateSelectedPumpTrain(
+    memberPumpIds: string[],
+    arrangement?: PumpTrain['arrangement'],
+  ) {
+    if (!selectedElement || selectedElement.type !== 'PUMP') return;
+    const trains = document.pump_trains ?? [];
+    const existing = trains.find((train) => train.member_pump_ids.includes(selectedElement.id));
+    const otherTrains = trains.filter((train) => train.id !== existing?.id);
+    const uniqueMembers = [...new Set(memberPumpIds)];
+    const nextTrains =
+      uniqueMembers.length < 2
+        ? otherTrains
+        : [
+            ...otherTrains,
+            {
+              id: existing?.id ?? `train-${selectedElement.id}`,
+              arrangement: arrangement ?? existing?.arrangement ?? 'PARALLEL',
+              member_pump_ids: uniqueMembers,
+            },
+          ];
+    commitDocument({
+      ...document,
+      schema_version: '1.1',
+      pump_trains: nextTrains,
+    });
+  }
+
   function updateLayoutMap(key: string, objectId: string, value: string) {
     const nextMap = { ...layoutMap(document, key), [objectId]: value };
     commitDocument({
@@ -1028,6 +2987,12 @@ function TerminalEditor({
       commitDocument({
         ...document,
         elements: document.elements.filter((element) => element.id !== selectedElementId),
+        pump_trains: (document.pump_trains ?? [])
+          .map((train) => ({
+            ...train,
+            member_pump_ids: train.member_pump_ids.filter((pumpId) => pumpId !== selectedElementId),
+          }))
+          .filter((train) => train.member_pump_ids.length >= 2),
       });
       setSelectedElementId(null);
     } else if (selectedConceptualLinkId) {
@@ -1464,7 +3429,9 @@ function TerminalEditor({
               terminalGraph.data && (
                 <TerminalGraphLayers
                   graph={terminalGraph.data}
+                  availabilityWindows={graphAvailability.data ?? []}
                   zoom={sceneView.zoom}
+                  routeElementIds={routeElementIds}
                   labelScale={
                     sceneViewBoxSize(canvasAspect, 1).width /
                     ((sceneRef.current?.clientWidth || 1100) * sceneView.zoom)
@@ -1486,13 +3453,13 @@ function TerminalEditor({
                   const laneY = middleY + (parallelOffsets.get(element.id) ?? 0);
                   const path = `M ${from.x} ${from.y} H ${middleX} V ${laneY} H ${to.x} V ${to.y}`;
                   const isComponent = INLINE_COMPONENTS.includes(element.type);
-                  const elementColor = elementColors[element.id] ?? '#52796f';
+                  const elementColor = elementColors[element.id] ?? '#5d57a2';
                   const label = elementLabels[element.id] ?? element.type.replaceAll('_', ' ');
                   const width = Math.max(3, Math.min(10, (element.diameter_mm ?? 300) / 80));
                   return (
                     <g
                       key={element.id}
-                      className={`network-object${selectedElementId === element.id ? ' is-selected' : ''}`}
+                      className={`network-object${selectedElementId === element.id ? ' is-selected' : ''}${routeElementIds.includes(element.id) ? ' is-route-highlight' : ''}`}
                       onClick={() => {
                         setSelectedElementId(element.id);
                         setSelectedNodeId(null);
@@ -1615,10 +3582,10 @@ function TerminalEditor({
                     )}
                     {node.type === 'MANIFOLD' ? (
                       <g transform="scale(0.72)">
-                        <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#b9d4c9'} />
+                        <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#c8d4e1'} />
                       </g>
                     ) : (
-                      <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#b9d4c9'} />
+                      <EquipmentGlyph type={node.type} color={nodeColors[node.id] ?? '#c8d4e1'} />
                     )}
                     {(drawingMode !== null || selectedNodeId === node.id) &&
                       equipmentPorts(node.type).map((port, index) => (
@@ -1817,7 +3784,7 @@ function TerminalEditor({
                       <input
                         aria-label="Equipment color"
                         type="color"
-                        value={nodeColors[selectedNode.id] ?? '#b9d4c9'}
+                        value={nodeColors[selectedNode.id] ?? '#c8d4e1'}
                         onChange={(event) =>
                           updateLayoutMap('node_colors', selectedNode.id, event.target.value)
                         }
@@ -1936,7 +3903,7 @@ function TerminalEditor({
                       <input
                         aria-label="Object color"
                         type="color"
-                        value={elementColors[selectedElement.id] ?? '#52796f'}
+                        value={elementColors[selectedElement.id] ?? '#5d57a2'}
                         onChange={(event) =>
                           updateLayoutMap('element_colors', selectedElement.id, event.target.value)
                         }
@@ -2006,6 +3973,325 @@ function TerminalEditor({
                             }
                           />
                         </label>
+                        <label>
+                          Performance curve
+                          <select
+                            value={selectedElement.performance_curve?.model ?? ''}
+                            onChange={(event) => {
+                              if (!event.target.value) {
+                                updatePumpCurve(undefined);
+                              } else if (event.target.value === 'QUADRATIC') {
+                                updatePumpCurve({
+                                  model: 'QUADRATIC',
+                                  min_flow_m3h: 100,
+                                  max_flow_m3h: 1000,
+                                  shutoff_head_m: 60,
+                                  quadratic_coefficient: 0.00005,
+                                  speed_ratio_min: 1,
+                                  speed_ratio_max: 1,
+                                });
+                              } else {
+                                updatePumpCurve({
+                                  model: 'TABULAR',
+                                  min_flow_m3h: 100,
+                                  max_flow_m3h: 1000,
+                                  points: [
+                                    { flow_m3h: 100, head_m: 60 },
+                                    { flow_m3h: 1000, head_m: 30 },
+                                  ],
+                                  speed_ratio_min: 1,
+                                  speed_ratio_max: 1,
+                                });
+                              }
+                            }}
+                          >
+                            <option value="">Constant head</option>
+                            <option value="QUADRATIC">Quadratic</option>
+                            <option value="TABULAR">Tabular</option>
+                          </select>
+                        </label>
+                        {selectedElement.performance_curve && (
+                          <>
+                            <label>
+                              Curve min flow (m³/h)
+                              <input
+                                min="0"
+                                step="any"
+                                type="number"
+                                value={selectedElement.performance_curve.min_flow_m3h}
+                                onChange={(event) =>
+                                  updatePumpCurve({
+                                    ...selectedElement.performance_curve!,
+                                    min_flow_m3h: Number(event.target.value),
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              Curve max flow (m³/h)
+                              <input
+                                min="0"
+                                step="any"
+                                type="number"
+                                value={selectedElement.performance_curve.max_flow_m3h}
+                                onChange={(event) =>
+                                  updatePumpCurve({
+                                    ...selectedElement.performance_curve!,
+                                    max_flow_m3h: Number(event.target.value),
+                                  })
+                                }
+                              />
+                            </label>
+                            <div className="pump-curve-speed-fields">
+                              <label>
+                                Min speed ratio
+                                <input
+                                  min="0.01"
+                                  max="1"
+                                  step="any"
+                                  type="number"
+                                  value={selectedElement.performance_curve.speed_ratio_min}
+                                  onChange={(event) =>
+                                    updatePumpCurve({
+                                      ...selectedElement.performance_curve!,
+                                      speed_ratio_min: Number(event.target.value),
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                Max speed ratio
+                                <input
+                                  min="0.01"
+                                  max="1"
+                                  step="any"
+                                  type="number"
+                                  value={selectedElement.performance_curve.speed_ratio_max}
+                                  onChange={(event) =>
+                                    updatePumpCurve({
+                                      ...selectedElement.performance_curve!,
+                                      speed_ratio_max: Number(event.target.value),
+                                    })
+                                  }
+                                />
+                              </label>
+                            </div>
+                            {selectedElement.performance_curve.model === 'QUADRATIC' ? (
+                              <>
+                                <label>
+                                  Shutoff head (m)
+                                  <input
+                                    min="0"
+                                    step="any"
+                                    type="number"
+                                    value={selectedElement.performance_curve.shutoff_head_m ?? 0}
+                                    onChange={(event) =>
+                                      updatePumpCurve({
+                                        ...selectedElement.performance_curve!,
+                                        shutoff_head_m: Number(event.target.value),
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  Quadratic coefficient
+                                  <input
+                                    min="0"
+                                    step="any"
+                                    type="number"
+                                    value={
+                                      selectedElement.performance_curve.quadratic_coefficient ?? 0
+                                    }
+                                    onChange={(event) =>
+                                      updatePumpCurve({
+                                        ...selectedElement.performance_curve!,
+                                        quadratic_coefficient: Number(event.target.value),
+                                      })
+                                    }
+                                  />
+                                </label>
+                              </>
+                            ) : (
+                              <div className="pump-curve-points">
+                                <strong>Flow/head points</strong>
+                                {(selectedElement.performance_curve.points ?? []).map(
+                                  (point, index) => (
+                                    <div
+                                      className="pump-curve-point"
+                                      key={`${index}-${point.flow_m3h}`}
+                                    >
+                                      <input
+                                        aria-label={`Point ${index + 1} flow (m³/h)`}
+                                        min="0"
+                                        step="any"
+                                        type="number"
+                                        value={point.flow_m3h}
+                                        onChange={(event) =>
+                                          updatePumpCurve({
+                                            ...selectedElement.performance_curve!,
+                                            points: (
+                                              selectedElement.performance_curve?.points ?? []
+                                            ).map((item, itemIndex) =>
+                                              itemIndex === index
+                                                ? { ...item, flow_m3h: Number(event.target.value) }
+                                                : item,
+                                            ),
+                                          })
+                                        }
+                                      />
+                                      <input
+                                        aria-label={`Point ${index + 1} head (m)`}
+                                        min="0"
+                                        step="any"
+                                        type="number"
+                                        value={point.head_m}
+                                        onChange={(event) =>
+                                          updatePumpCurve({
+                                            ...selectedElement.performance_curve!,
+                                            points: (
+                                              selectedElement.performance_curve?.points ?? []
+                                            ).map((item, itemIndex) =>
+                                              itemIndex === index
+                                                ? { ...item, head_m: Number(event.target.value) }
+                                                : item,
+                                            ),
+                                          })
+                                        }
+                                      />
+                                      <button
+                                        aria-label={`Remove point ${index + 1}`}
+                                        disabled={
+                                          (selectedElement.performance_curve?.points?.length ??
+                                            0) <= 2
+                                        }
+                                        title="Remove curve point"
+                                        type="button"
+                                        onClick={() =>
+                                          updatePumpCurve({
+                                            ...selectedElement.performance_curve!,
+                                            points: (
+                                              selectedElement.performance_curve?.points ?? []
+                                            ).filter((_item, itemIndex) => itemIndex !== index),
+                                          })
+                                        }
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </div>
+                                  ),
+                                )}
+                                <button
+                                  className="secondary-action"
+                                  type="button"
+                                  onClick={() => {
+                                    const points = selectedElement.performance_curve?.points ?? [];
+                                    const last = points.at(-1) ?? { flow_m3h: 100, head_m: 60 };
+                                    updatePumpCurve({
+                                      ...selectedElement.performance_curve!,
+                                      points: [
+                                        ...points,
+                                        { flow_m3h: last.flow_m3h + 100, head_m: last.head_m },
+                                      ],
+                                    });
+                                  }}
+                                >
+                                  <Plus size={13} /> Add point
+                                </button>
+                              </div>
+                            )}
+                            <label>
+                              Required NPSH (m)
+                              <input
+                                min="0"
+                                step="any"
+                                type="number"
+                                value={selectedElement.npsh_required_m ?? 0}
+                                onChange={(event) =>
+                                  updatePumpElement({ npsh_required_m: Number(event.target.value) })
+                                }
+                              />
+                            </label>
+                            <label>
+                              Suction margin (m)
+                              <input
+                                min="0"
+                                step="any"
+                                type="number"
+                                value={selectedElement.npsh_margin_m ?? 0.5}
+                                onChange={(event) =>
+                                  updatePumpElement({ npsh_margin_m: Number(event.target.value) })
+                                }
+                              />
+                            </label>
+                          </>
+                        )}
+                        <div className="pump-train-editor">
+                          <strong>Pump train</strong>
+                          <span>Select another pump to group it with this pump.</span>
+                          {document.elements
+                            .filter(
+                              (element) =>
+                                element.type === 'PUMP' && element.id !== selectedElement.id,
+                            )
+                            .map((pump) => {
+                              const train = (document.pump_trains ?? []).find((item) =>
+                                item.member_pump_ids.includes(selectedElement.id),
+                              );
+                              const members = train?.member_pump_ids ?? [selectedElement.id];
+                              const belongsToAnotherTrain = (document.pump_trains ?? []).some(
+                                (item) =>
+                                  item.id !== train?.id && item.member_pump_ids.includes(pump.id),
+                              );
+                              return (
+                                <label className="pump-train-member" key={pump.id}>
+                                  <input
+                                    checked={members.includes(pump.id)}
+                                    disabled={belongsToAnotherTrain}
+                                    type="checkbox"
+                                    onChange={(event) =>
+                                      updateSelectedPumpTrain(
+                                        event.target.checked
+                                          ? [...members, pump.id]
+                                          : members.filter((memberId) => memberId !== pump.id),
+                                      )
+                                    }
+                                  />
+                                  {pump.id}
+                                  {belongsToAnotherTrain && (
+                                    <small>Assigned to another train</small>
+                                  )}
+                                </label>
+                              );
+                            })}
+                          {(document.pump_trains ?? []).some((train) =>
+                            train.member_pump_ids.includes(selectedElement.id),
+                          ) && (
+                            <label>
+                              Arrangement
+                              <select
+                                value={
+                                  (document.pump_trains ?? []).find((train) =>
+                                    train.member_pump_ids.includes(selectedElement.id),
+                                  )?.arrangement ?? 'PARALLEL'
+                                }
+                                onChange={(event) => {
+                                  const train = (document.pump_trains ?? []).find((item) =>
+                                    item.member_pump_ids.includes(selectedElement.id),
+                                  );
+                                  if (train) {
+                                    updateSelectedPumpTrain(
+                                      train.member_pump_ids,
+                                      event.target.value as PumpTrain['arrangement'],
+                                    );
+                                  }
+                                }}
+                              >
+                                <option value="SERIES">Series</option>
+                                <option value="PARALLEL">Parallel</option>
+                              </select>
+                            </label>
+                          )}
+                        </div>
                       </>
                     )}
                     {selectedElement.type === 'VALVE' && (
@@ -2055,39 +4341,10 @@ export function App() {
         <Route path="terminals" element={<TerminalRegister />} />
         <Route path="designer" element={<DesignerEntry />} />
         <Route path="designer/:terminalId" element={<TerminalDesigner />} />
-        <Route
-          path="planner"
-          element={
-            <ModulePage
-              eyebrow="OPERATIONS PLANNING"
-              title="Route planner"
-              summary="Transfer route workspace"
-              Icon={RouteIcon}
-            />
-          }
-        />
-        <Route
-          path="availability"
-          element={
-            <ModulePage
-              eyebrow="EQUIPMENT STATUS"
-              title="Availability"
-              summary="Maintenance and equipment windows"
-              Icon={Activity}
-            />
-          }
-        />
-        <Route
-          path="versions"
-          element={
-            <ModulePage
-              eyebrow="CHANGE HISTORY"
-              title="Versions"
-              summary="Terminal document history"
-              Icon={History}
-            />
-          }
-        />
+        <Route path="planner" element={<RoutePlannerPage />} />
+        <Route path="optimization" element={<OptimizationPage />} />
+        <Route path="availability" element={<AvailabilityPage />} />
+        <Route path="versions" element={<VersionsPage />} />
         <Route path="*" element={<Navigate to="/terminals" replace />} />
       </Route>
     </Routes>

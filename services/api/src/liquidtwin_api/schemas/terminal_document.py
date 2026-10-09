@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
+
+
+class SchemaVersion(Enum):
+    field_1_0 = '1.0'
+    field_1_1 = '1.1'
 
 
 class Id(RootModel[str]):
@@ -43,6 +48,47 @@ class TankGroup(BaseModel):
     id: Id
     name: str
     tank_ids: list[Id] | None = None
+
+
+class PerformancePoint(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    flow_m3h: Annotated[float, Field(ge=0.0)]
+    head_m: Annotated[float, Field(ge=0.0)]
+
+
+class Model(Enum):
+    QUADRATIC = 'QUADRATIC'
+    TABULAR = 'TABULAR'
+
+
+class PerformanceCurve(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    model: Model
+    min_flow_m3h: Annotated[float, Field(ge=0.0)]
+    max_flow_m3h: Annotated[float, Field(gt=0.0)]
+    shutoff_head_m: Annotated[float | None, Field(ge=0.0)] = None
+    quadratic_coefficient: Annotated[float | None, Field(ge=0.0)] = None
+    points: list[PerformancePoint] | None = None
+    speed_ratio_min: Annotated[float, Field(gt=0.0, le=1.0)]
+    speed_ratio_max: Annotated[float, Field(gt=0.0, le=1.0)]
+
+
+class Arrangement(Enum):
+    SERIES = 'SERIES'
+    PARALLEL = 'PARALLEL'
+
+
+class PumpTrain(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: Id
+    arrangement: Arrangement
+    member_pump_ids: list[Id]
 
 
 class Type(Enum):
@@ -113,6 +159,9 @@ class Element(BaseModel):
     tank_id: Id | None = None
     head_m: Annotated[float | None, Field(ge=0.0)] = None
     max_flow_m3h: Annotated[float | None, Field(gt=0.0)] = None
+    performance_curve: PerformanceCurve | None = None
+    npsh_required_m: Annotated[float | None, Field(ge=0.0)] = None
+    npsh_margin_m: Annotated[float | None, Field(ge=0.0)] = 0.5
     operate_min: Annotated[float | None, Field(ge=0.0)] = None
     state: State | None = None
 
@@ -121,11 +170,12 @@ class TerminalDocument(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    schema_version: Literal['1.0']
+    schema_version: SchemaVersion
     name: Annotated[str, Field(max_length=120, min_length=1)]
     products: list[Product]
     changeover: list[ChangeoverRule] | None = None
     tank_groups: list[TankGroup] | None = None
+    pump_trains: list[PumpTrain] | None = None
     nodes: list[Node]
     elements: list[Element]
     layout: Annotated[

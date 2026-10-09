@@ -32,7 +32,7 @@ Cumulative constraint per tank: `stock0 + inflow(t) - outflow(t)` within `[min, 
 Residue of each element after a job = job product. Flush cost when consecutive users differ is taken from the sequence on that element (circuit arcs carry the flush cost), replacing the static residue of the reference.
 
 ## Solver configuration
-`max_time_in_seconds` default 30, `num_workers` 8, seeded (`random_seed`), warm-start from greedy plan, solution callback for progress/incumbents, objective bound reported as gap.
+`max_time_in_seconds` defaults to 30, `num_workers` defaults to 1 for reproducible runs, and `random_seed` is fixed/configurable per scenario. Results distinguish OPTIMAL, FEASIBLE (incumbent), INFEASIBLE, NO_ROUTE, and UNKNOWN (no incumbent before the limit); objective and best bound are returned when available.
 
 ## Infeasibility handling
 Stage 1 empty -> `NO_ROUTE(job, reasons)`. Stage 2 INFEASIBLE -> assumptions-based unsat core mapped to jobs/elements (e.g., "jobs 2 and 4 conflict on E7 during maintenance").
@@ -42,3 +42,9 @@ Stage 1 empty -> `NO_ROUTE(job, reasons)`. Stage 2 INFEASIBLE -> assumptions-bas
 
 ## Regression
 `tests/reference` runs Python reference and new service on the sample; must match status OPTIMAL and objective 1327.
+
+## Implemented Stage 2 behavior
+- `POST /terminals/{terminalId}/optimization/prepare` returns Stage 1 candidates and blockers per job against a pinned terminal version. `POST /terminals/{terminalId}/optimize` re-derives those candidates and solves the request-scoped scenario.
+- CP-SAT uses optional route-element intervals with per-element `NoOverlap`, maintenance intervals, and sequence circuits only where product changeover/manual-clean rules require ordering. Zero-setup resources use `NoOverlap` without an unnecessary circuit.
+- Source stock and destination ullage are aggregate horizon budgets. Schedules and element timelines are returned, not persisted.
+- The engine tests include the four-job objective-1327 oracle and a 40-job interval-model regression; larger-instance latency remains subject to the configured time limit and future benchmark fixtures.

@@ -67,6 +67,17 @@ Unique on `(terminal_id, element_id, source, external_ref)`.
 ### ValidationIssue
 `severity (ERROR|WARNING), code, element_id?, node_id?, message, fix_hint`.
 
+### TerminalGraph (derived, not persisted)
+The engine derives this from one `TerminalDocument`; it is not a second source of truth. It contains the terminal's `nodes`, `elements`, directed `arcs`, and validation `issues`. The engine representation also indexes arcs by their source node (`out`) for graph traversal. The API exposes a versioned read-only projection at `GET /terminals/{terminalId}/graph?version=N`.
+
+### GraphArc (engine and API projection)
+- Engine fields: `element_id, u, v, reversed`.
+- API fields: `id, element_id, from, to, reversed, traversable, restriction?`.
+- A forward arc follows the element's `from` to `to`. A reverse arc follows `to` to `from`; its `reversed` flag remains true for explanations and hydraulic sign changes.
+- Reverse arcs are generated when the element is bidirectional or is a PUMP. Reverse pump arcs are retained in the projection with `traversable=false` and `restriction=ONE_WAY_PUMP`; routing excludes them even when pump head is zero.
+- Parallel physical elements produce distinct arcs with distinct `element_id` values.
+- Structural validation errors (`SCHEMA`, `DUPLICATE_ID`, `DANGLING_ELEMENT`, `SELF_LOOP`) prevent projection with HTTP 422. Other validation issues are returned alongside the graph.
+
 ### ConfirmedRoute
 `id, terminal_id, terminal_version, request (RouteRequest), route (Route), outdated (bool, default false), outdated_reason?, created_at, actor`. Created when the user selects the final route from the shortlist (FR-023). Set `outdated = true` when an availability window overlapping the route's elements and the job window is added or changed (FR-016). `actor` is the anonymous actor in the single-user MVP and reserved for later multi-user use.
 
@@ -87,7 +98,10 @@ Unique on `(terminal_id, element_id, source, external_ref)`.
 - Import is all-or-nothing: any ERROR rejects the file with per-row messages.
 
 ## Graph derivation
-Each element yields forward arc `from->to` and, unless `bidirectional=false` or type is PUMP, reverse arc with `elevation_delta` sign flipped. Arc attributes mirror the element plus job-dependent computed values (velocity, head required, fill minutes, flush volume).
+Each element yields a forward arc `from->to`. A reverse arc `to->from` is also created when `bidirectional=true` or the element is a PUMP; the reverse pump arc is retained for explanation but is not traversable. Reverse traversal flips the elevation delta sign. The graph is a directed multigraph: parallel elements remain distinct. Job-dependent values (velocity, required head, fill time, flush volume) are computed during routing, not stored in the graph projection.
+
+### K-shortest-path use
+`route_job` consumes the same engine `TerminalGraph` used by the graph API projection. It filters arcs for the job, forms a simple directed graph using the lowest-cost eligible arc per node pair, generates up to K=20 shortest simple node paths with NetworkX, then expands parallel element alternatives (bounded to 8 combinations per path) and checks pump head. Feasible routes are ranked by total time, flush volume, valve count, common-header count, then stable element IDs. The HTTP graph response is for inspection and is not reparsed by the router.
 
 ## State transitions
 - Availability: `AVAILABLE <-> MAINTENANCE | FLUSHING | CLEANING | OUT_OF_SERVICE` by window; a window active at any time in the job window excludes the element.

@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.1",
+  "name": "Pump curve reference terminal",
+  "products": [
+    {
+      "id": "P1",
+      "name": "Reference product",
+      "friction_factor": 0.005,
+      "max_velocity": 3
+    }
+  ],
+  "nodes": [
+    {
+      "id": "source",
+      "type": "JETTY",
+      "name": "Source",
+      "max_rate_m3h": 1000,
+      "certified_products": ["P1"]
+    },
+    { "id": "junction", "type": "JUNCTION", "name": "Pump discharge" },
+    {
+      "id": "destination",
+      "type": "TANK",
+      "name": "Destination",
+      "capacity_m3": 1000,
+      "stock_m3": 0,
+      "allow_inbound": true
+    }
+  ],
+  "elements": [
+    {
+      "id": "pump-1",
+      "type": "PUMP",
+      "from": "source",
+      "to": "junction",
+      "length_m": 0,
+      "diameter_mm": 300,
+      "elevation_delta_m": 0,
+      "certified_products": ["P1"],
+      "bidirectional": false,
+      "head_m": 60,
+      "performance_curve": {
+        "model": "QUADRATIC",
+        "min_flow_m3h": 100,
+        "max_flow_m3h": 1000,
+        "shutoff_head_m": 60,
+        "quadratic_coefficient": 0.0001,
+        "speed_ratio_min": 1,
+        "speed_ratio_max": 1
+      },
+      "npsh_required_m": 2,
+      "npsh_margin_m": 0.5
+    },
+    {
+      "id": "line-1",
+      "type": "LINE",
+      "from": "junction",
+      "to": "destination",
+      "length_m": 0,
+      "diameter_mm": 300,
+      "elevation_delta_m": 20,
+      "certified_products": ["P1"]
+    }
+  ]
+}

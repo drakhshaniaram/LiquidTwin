@@ -6,11 +6,12 @@
   "required": ["schema_version", "name", "products", "nodes", "elements"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "1.0" },
+    "schema_version": { "enum": ["1.0", "1.1"] },
     "name": { "type": "string", "minLength": 1, "maxLength": 120 },
     "products": { "type": "array", "items": { "$ref": "#/$defs/Product" } },
     "changeover": { "type": "array", "items": { "$ref": "#/$defs/ChangeoverRule" } },
     "tank_groups": { "type": "array", "items": { "$ref": "#/$defs/TankGroup" } },
+    "pump_trains": { "type": "array", "items": { "$ref": "#/$defs/PumpTrain" } },
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/Node" } },
     "elements": { "type": "array", "items": { "$ref": "#/$defs/Element" } },
     "layout": {
@@ -54,6 +55,50 @@
         "id": { "$ref": "#/$defs/Id" },
         "name": { "type": "string" },
         "tank_ids": { "type": "array", "items": { "$ref": "#/$defs/Id" } }
+      }
+    },
+    "PerformancePoint": {
+      "type": "object",
+      "required": ["flow_m3h", "head_m"],
+      "additionalProperties": false,
+      "properties": {
+        "flow_m3h": { "type": "number", "minimum": 0 },
+        "head_m": { "type": "number", "minimum": 0 }
+      }
+    },
+    "PerformanceCurve": {
+      "type": "object",
+      "required": ["model", "min_flow_m3h", "max_flow_m3h", "speed_ratio_min", "speed_ratio_max"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "enum": ["QUADRATIC", "TABULAR"] },
+        "min_flow_m3h": { "type": "number", "minimum": 0 },
+        "max_flow_m3h": { "type": "number", "exclusiveMinimum": 0 },
+        "shutoff_head_m": { "type": "number", "minimum": 0 },
+        "quadratic_coefficient": { "type": "number", "minimum": 0 },
+        "points": { "type": "array", "items": { "$ref": "#/$defs/PerformancePoint" } },
+        "speed_ratio_min": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "speed_ratio_max": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "model": { "const": "QUADRATIC" } } },
+          "then": { "required": ["shutoff_head_m", "quadratic_coefficient"] }
+        },
+        {
+          "if": { "properties": { "model": { "const": "TABULAR" } } },
+          "then": { "required": ["points"] }
+        }
+      ]
+    },
+    "PumpTrain": {
+      "type": "object",
+      "required": ["id", "arrangement", "member_pump_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "arrangement": { "enum": ["SERIES", "PARALLEL"] },
+        "member_pump_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Id" } }
       }
     },
     "Node": {
@@ -107,6 +152,9 @@
         "tank_id": { "$ref": "#/$defs/Id" },
         "head_m": { "type": "number", "minimum": 0 },
         "max_flow_m3h": { "type": "number", "exclusiveMinimum": 0 },
+        "performance_curve": { "$ref": "#/$defs/PerformanceCurve" },
+        "npsh_required_m": { "type": "number", "minimum": 0 },
+        "npsh_margin_m": { "type": "number", "minimum": 0, "default": 0.5 },
         "operate_min": { "type": "number", "minimum": 0 },
         "state": { "enum": ["OPEN", "CLOSED"] }
       },

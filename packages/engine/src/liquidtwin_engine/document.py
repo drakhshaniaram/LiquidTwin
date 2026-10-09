@@ -70,8 +70,19 @@ class Element:
     bidirectional: bool = True
     tank_id: str | None = None
     head_m: float = 0.0
+    max_flow_m3h: float | None = None
     operate_min: float = 0.0
     state: str | None = None
+    performance_curve: dict[str, Any] | None = None
+    npsh_required_m: float | None = None
+    npsh_margin_m: float = 0.5
+
+
+@dataclass
+class PumpTrain:
+    id: str
+    arrangement: str
+    member_pump_ids: tuple[str, ...]
 
 
 @dataclass
@@ -82,6 +93,7 @@ class Terminal:
     nodes: dict[str, Node] = field(default_factory=dict)
     elements: dict[str, Element] = field(default_factory=dict)
     tank_groups: dict[str, list[str]] = field(default_factory=dict)
+    pump_trains: dict[str, PumpTrain] = field(default_factory=dict)
 
 
 def _s(v: Any) -> str | None:
@@ -123,7 +135,17 @@ def parse_document(data: dict[str, Any]) -> Terminal:
             residue_product_id=_s(e.get("residue_product_id")),
             bidirectional=True if e.get("bidirectional") is None else e["bidirectional"],
             tank_id=_s(e.get("tank_id")), head_m=e.get("head_m") or 0.0,
-            operate_min=e.get("operate_min") or 0.0, state=e.get("state"))
+            max_flow_m3h=e.get("max_flow_m3h"),
+            operate_min=e.get("operate_min") or 0.0, state=e.get("state"),
+            performance_curve=e.get("performance_curve"),
+            npsh_required_m=e.get("npsh_required_m"),
+            npsh_margin_m=0.5 if e.get("npsh_margin_m") is None else e["npsh_margin_m"])
     for g in d.get("tank_groups") or []:
         t.tank_groups[g["id"]] = list(g.get("tank_ids") or [])
+    for train in d.get("pump_trains") or []:
+        t.pump_trains[train["id"]] = PumpTrain(
+            id=train["id"],
+            arrangement=train["arrangement"],
+            member_pump_ids=tuple(train["member_pump_ids"]),
+        )
     return t

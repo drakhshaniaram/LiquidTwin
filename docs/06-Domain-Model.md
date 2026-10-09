@@ -24,6 +24,8 @@ classDiagram
   Node <|-- Junction
   Terminal "1" o-- "*" Product
   Terminal "1" o-- "1" ChangeoverMatrix
+  Terminal "1" o-- "*" PumpTrain
+  PumpTrain "*" --> "2..*" Pump : members
 ```
 
 ## Nodes (vertices)
@@ -44,7 +46,7 @@ Common fields: `id, from, to, type, length_m, diameter_mm, elevation_delta_m, in
 | TANK_HEADER (TH) | One-way pipe connected to a single tank | tank_id |
 | SEGMENT (SEG) | Pipe connected to a tank; may be shared between groups | tank_id |
 | COMMON_HEADER | Shared between multiple tanks or joining two pipelines | - |
-| PUMP | Adds head | curve points, one-way flag, min/max flow, efficiency |
+| PUMP | Adds head | constant head or schema 1.1 curve, one-way flag, flow/speed bounds, NPSHr and suction margin |
 | VALVE | Zero length, operation time | open/close time, state, fail-safe |
 | JETTY_LINE / LOAD_LINE | Line to jetty or loading point | - |
 
@@ -66,3 +68,10 @@ Common fields: `id, from, to, type, length_m, diameter_mm, elevation_delta_m, in
 
 ## Route
 Ordered `[element_id, direction]` plus derived metrics: fill_min, flush_volume, flush_min, valves, common_headers, pump_head_margin, velocity_max.
+
+## Pump hydraulics (schema 1.1)
+- `PerformanceCurve`: quadratic coefficients or ordered flow/head points, declared minimum/maximum flow, and permitted speed-ratio range.
+- `PumpTrain`: at least two distinct PUMP elements in a SERIES or PARALLEL arrangement; a pump belongs to at most one train.
+- `PumpSuctionInput`: operation-specific available suction head keyed by pump ID; it is not persisted in the terminal document.
+- `OperatingPoint`: derived achieved flow, pump head, system head, head/suction margins, and selected speed ratio. It is returned with route metrics and is not stored as authored terminal data.
+- Schema 1.0 documents retain constant-head behavior; schema 1.1 adds curve and train fields without changing the legacy representation.

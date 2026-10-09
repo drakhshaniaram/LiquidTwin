@@ -1,0 +1,37 @@
+/* Theme tokens. Add a theme with a new [data-theme='name'] block; set it via <html data-theme>. */
+:root,
+:root[data-theme='opentas'] {
+  --brand: #532a85;
+  --brand-strong: #2b1646;
+  --brand-tint: #5d57a2;
+  --brand-wash: #efeaf6;
+  --accent: #f6a20b;
+  --accent-tint: #fab943;
+  --accent-strong: #d98a00;
+  --text-2: #4a5a68;
+  --text-3: #7d8b98;
+  --line: #e1e6ec;
+  --line-strong: #c8d4e1;
+  --surface-0: #fbfcfd;
+  --surface-1: #f5f6f8;
+  --surface-2: #eceff4;
+  --canvas: #ffffff;
+  --glass: rgb(255 255 255 / 72%);
+  --glass-border: rgb(200 212 225 / 70%);
+  --focus-ring: #fab943;
+  --good: #2e8b57;
+  --warn: #d98a00;
+  --bad: #c0392b;
+  --font-text:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI',
+    system-ui, sans-serif;
+  --font-display:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI',
+    system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --shadow-sm: 0 1px 2px rgb(43 22 70 / 6%), 0 1px 1px rgb(43 22 70 / 4%);
+  --shadow-md: 0 8px 24px rgb(43 22 70 / 10%), 0 2px 6px rgb(43 22 70 / 6%);
+}
